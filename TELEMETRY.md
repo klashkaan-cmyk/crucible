@@ -12,8 +12,9 @@ disclosed on first run and can be turned off permanently in one command.
   to your identity, IP-as-identity, GitHub, or npm account.
 - **Opt out anytime:** `crucible telemetry off`, or set `CRUCIBLE_TELEMETRY=0`,
   or the standard `DO_NOT_TRACK=1`.
-- **Dormant unless a collector is configured.** If no endpoint is set, nothing
-  leaves your machine regardless of settings.
+- **On by default, disclosed, opt-out.** Events go to the project collector
+  (`https://ahmad.chatbotbuddy.net/crucible/v1/events`) unless you opt out. A
+  one-time notice is shown on first run before anything is sent.
 - **Fail-silent and time-boxed.** Telemetry never blocks, slows, or breaks a run.
 
 ## What is collected
@@ -58,8 +59,9 @@ Config lives at `${XDG_CONFIG_HOME:-~/.config}/crucible/config.json`.
 
 ## For maintainers / self-hosters
 
-Collection is **off-network by default**: the built-in endpoint is empty, so
-nothing is sent until you point Crucible at a collector you operate via
-`CRUCIBLE_TELEMETRY_URL` (or by replacing `DEFAULT_ENDPOINT` in
-`src/telemetry.ts` in your own build). The payload is a plain JSON POST. Host it,
-document your retention policy, and keep this file accurate to what you collect.
+The default collector endpoint is baked into the build
+(`https://ahmad.chatbotbuddy.net/crucible/v1/events`). Override it per-run with
+`CRUCIBLE_TELEMETRY_URL`, force off-network by setting that var to an empty
+string, or replace `DEFAULT_ENDPOINT` in `src/telemetry.ts` in your own fork.
+The payload is a plain JSON POST. If you self-host, document your retention
+policy and keep this file accurate to what you collect.

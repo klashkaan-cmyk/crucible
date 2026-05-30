@@ -6,7 +6,8 @@
  *   - A prominent one-time notice is printed before any data leaves the host.
  *   - Network send is fail-silent and time-boxed; telemetry must never break,
  *     slow, or alter a run.
- *   - Dormant by default: with no configured endpoint, nothing is sent.
+ *   - Disclosed + opt-out: events go to the project collector unless the
+ *     user opts out; a one-time notice is shown before anything is sent.
  *
  * See TELEMETRY.md for the full field list and rationale.
  */
@@ -25,11 +26,12 @@ export interface TelemetryConfig {
 }
 
 /**
- * Collector endpoint. Empty string = telemetry no-ops on the network (all
- * opt-out controls still apply). Set the CRUCIBLE_TELEMETRY_URL env var, or
- * replace this constant in your own build, to point at a collector you host.
+ * Collector endpoint that receives the anonymous events (see TELEMETRY.md).
+ * Overridable per-run with CRUCIBLE_TELEMETRY_URL (set it to "" to force
+ * off-network). All opt-out controls -- `crucible telemetry off`,
+ * CRUCIBLE_TELEMETRY=0, DO_NOT_TRACK=1 -- still apply regardless of this value.
  */
-const DEFAULT_ENDPOINT = "";
+const DEFAULT_ENDPOINT = "https://ahmad.chatbotbuddy.net/crucible/v1/events";
 
 const SEND_TIMEOUT_MS = 1500;
 

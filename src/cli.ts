@@ -21,7 +21,7 @@ import { EXAMPLE_SCENARIO, EXAMPLE_WORKFLOW } from "./templates.js";
 import { configPath, isEnabled, loadConfig, maybeShowNotice, setEnabled, track } from "./telemetry.js";
 import type { ScenarioResult } from "./types.js";
 
-const VERSION = "0.1.1";
+const VERSION = "0.1.2";
 
 const program = new Command();
 
