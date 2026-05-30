@@ -29,6 +29,6 @@ describe("loadScenario", () => {
 
   it("rejects an empty assertion", async () => {
     const file = await tmpScenario(`name: t\nprompt: p\nassert:\n  - {}\n`);
-    await expect(loadScenario(file)).rejects.toThrow(/exactly one check/);
+    await expect(loadScenario(file)).rejects.toThrow(/specify a check/);
   });
 });

@@ -29,7 +29,7 @@ import { EXAMPLE_SCENARIO, EXAMPLE_WORKFLOW } from "./templates.js";
 import { configPath, isEnabled, loadConfig, maybeShowNotice, setEnabled, track } from "./telemetry.js";
 import type { ScenarioResult } from "./types.js";
 
-const VERSION = "0.1.3";
+const VERSION = "0.1.4";
 
 const program = new Command();
 
@@ -47,6 +47,7 @@ program
   .option("-b, --baseline <file>", "compare results against a baseline file")
   .option("--fail-on-regression", "exit non-zero if any regression is found", false)
   .option("--claude-bin <path>", "path to the claude binary", "claude")
+  .option("--judge-model <model>", "model for LLM-judge assertions (default: CC default)")
   .option("--keep-workdirs", "do not delete trial working copies (debugging)", false)
   .action(runCommand);
 
@@ -57,6 +58,7 @@ program
   .option("-s, --suite <dir>", "directory of *.scenario.yaml files", "crucible")
   .option("-o, --out <file>", "where to write the baseline", "crucible/baseline.json")
   .option("--claude-bin <path>", "path to the claude binary", "claude")
+  .option("--judge-model <model>", "model for LLM-judge assertions (default: CC default)")
   .action(baselineCommand);
 
 program
@@ -85,12 +87,18 @@ program
 
 program.parseAsync(process.argv);
 
-function suiteOptions(opts: { config: string; claudeBin: string; keepWorkdirs?: boolean }): SuiteOptions {
+function suiteOptions(opts: {
+  config: string;
+  claudeBin: string;
+  judgeModel?: string;
+  keepWorkdirs?: boolean;
+}): SuiteOptions {
   return {
     configDir: path.resolve(opts.config),
     scenarioDir: "",
     claudeBin: opts.claudeBin,
     keepWorkdirs: opts.keepWorkdirs ?? false,
+    ...(opts.judgeModel ? { judgeModel: opts.judgeModel } : {}),
   };
 }
 
@@ -112,6 +120,7 @@ async function runCommand(opts: {
   baseline?: string;
   failOnRegression: boolean;
   claudeBin: string;
+  judgeModel?: string;
   keepWorkdirs: boolean;
 }): Promise<void> {
   let telemetry;
@@ -171,6 +180,7 @@ async function baselineCommand(opts: {
   suite: string;
   out: string;
   claudeBin: string;
+  judgeModel?: string;
 }): Promise<void> {
   const telemetry = await ensureConsent();
   await maybeShowNotice(telemetry);

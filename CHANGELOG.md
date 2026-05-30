@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.1.4
+- Add LLM-judge assertions: `judge: "<rubric>"` scores the run 1-5 via a neutral, tool-free model. Soft signal by default (never fails a gate); add `min_score` to opt into gating. New `--judge-model` flag.
+
 ## 0.1.3
 - Add `crucible baseline` to snapshot known-good behavior, and `crucible run --baseline <file> [--fail-on-regression]` to catch silent quality regressions (pass-rate drops, stable->flaky, cost increases) even when each scenario still passes its own gate.
 

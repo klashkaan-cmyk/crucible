@@ -77,6 +77,23 @@ gate:
 | `command_not_run: glob` | no tool invocation matched the glob |
 | `command_succeeds: cmd` | the command exits 0 in the workdir |
 | `cost_under: usd` | the run's `total_cost_usd` stayed under the ceiling |
+| `judge: rubric` (+ `min_score`) | an LLM scores the output 1-5 vs the rubric |
+
+### LLM-judge assertions (soft by default)
+
+Some quality checks are not mechanical ("did it actually hash the password?",
+"is the error message helpful?"). A `judge` assertion has a neutral, tool-free
+LLM score the run's output against a rubric, 1-5:
+
+```yaml
+  - judge: "The error response is helpful and does not leak internal details"
+  - judge: "Password is hashed with bcrypt or argon2, never stored plaintext"
+    min_score: 4     # opt-in gate
+```
+
+By design the judge is a **soft signal**: with no `min_score` it is reported but
+never fails a gate. Add `min_score` to explicitly opt into gating on it. Pick the
+judge model with `--judge-model` (a cheaper model keeps eval cost down).
 
 ## Baselines & regression detection
 

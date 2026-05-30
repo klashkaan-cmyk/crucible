@@ -9,21 +9,29 @@ import { execFile } from "node:child_process";
 import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
+import { runJudge } from "./judge.js";
 import type { AssertionSpecT } from "./scenario.js";
 import type { AssertionResult, TrialRun } from "./types.js";
 
 const exec = promisify(execFile);
 
+export interface AssertionOptions {
+  readonly claudeBin?: string;
+  readonly judgeModel?: string;
+}
+
 export async function evaluateAssertions(
   specs: ReadonlyArray<AssertionSpecT>,
   run: TrialRun,
+  opts: AssertionOptions = {},
 ): Promise<AssertionResult[]> {
-  return Promise.all(specs.map((s) => evaluateOne(s, run)));
+  return Promise.all(specs.map((s) => evaluateOne(s, run, opts)));
 }
 
 async function evaluateOne(
   spec: AssertionSpecT,
   run: TrialRun,
+  opts: AssertionOptions,
 ): Promise<AssertionResult> {
   if (spec.file_exists !== undefined) return checkFileExists(spec.file_exists, run.workdir);
   if (spec.file_matches !== undefined) return checkFileMatches(spec.file_matches, run.workdir);
@@ -32,6 +40,7 @@ async function evaluateOne(
   if (spec.command_not_run !== undefined) return checkCommandNotRun(spec.command_not_run, run);
   if (spec.command_succeeds !== undefined) return checkCommandSucceeds(spec.command_succeeds, run.workdir);
   if (spec.cost_under !== undefined) return checkCostUnder(spec.cost_under, run);
+  if (spec.judge !== undefined) return checkJudge(spec.judge, spec.min_score, run, opts);
   return { kind: "unknown", status: "error", message: "no recognized assertion key" };
 }
 
@@ -102,6 +111,40 @@ function checkCostUnder(ceiling: number, run: TrialRun): AssertionResult {
   return cost <= ceiling
     ? { kind, status: "pass", message: `cost $${cost.toFixed(4)} <= $${ceiling}` }
     : { kind, status: "fail", message: `cost $${cost.toFixed(4)} > $${ceiling}` };
+}
+
+/**
+ * LLM-judge. Soft signal by default: with no `min_score`, the verdict is
+ * reported but always passes, so it can never fail a gate on its own. With
+ * `min_score` set, the author has explicitly opted into gating on the score.
+ */
+async function checkJudge(
+  rubric: string,
+  minScore: number | undefined,
+  run: TrialRun,
+  opts: AssertionOptions,
+): Promise<AssertionResult> {
+  const kind = `judge:${rubric.slice(0, 40)}`;
+  let score = 0;
+  let reason = "";
+  try {
+    const verdict = await runJudge(rubric, run, { claudeBin: opts.claudeBin, model: opts.judgeModel });
+    score = verdict.score;
+    reason = verdict.reason;
+  } catch (err) {
+    reason = (err as Error).message.slice(0, 120);
+  }
+
+  if (minScore === undefined) {
+    const note = score ? `score ${score}/5${reason ? ` - ${reason}` : ""}` : `unscored (${reason})`;
+    return { kind, status: "pass", message: `(soft) ${note}` };
+  }
+  if (!score) {
+    return { kind, status: "fail", message: `judge could not score (${reason}); required >= ${minScore}` };
+  }
+  return score >= minScore
+    ? { kind, status: "pass", message: `score ${score}/5 >= ${minScore}${reason ? ` - ${reason}` : ""}` }
+    : { kind, status: "fail", message: `score ${score}/5 < ${minScore}${reason ? ` - ${reason}` : ""}` };
 }
 
 function globToRegExp(glob: string): RegExp {

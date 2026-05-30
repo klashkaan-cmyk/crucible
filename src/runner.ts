@@ -123,3 +123,47 @@ export function parseHeadless(stdout: string): HeadlessResult {
     sessionId: String(obj.session_id ?? ""),
   };
 }
+
+export interface HeadlessTextOptions {
+  readonly prompt: string;
+  readonly claudeBin?: string;
+  readonly model?: string;
+  readonly maxTurns?: number;
+  readonly timeoutMs?: number;
+}
+
+/**
+ * Run a one-shot, tool-free headless query and return the model's text. Used by
+ * the LLM judge: a self-contained prompt in, a verdict out. Runs in a temp cwd
+ * so it cannot read the trial workdir except via what we put in the prompt.
+ */
+export async function runHeadlessText(opts: HeadlessTextOptions): Promise<string> {
+  const workdir = await mkdtemp(path.join(tmpdir(), "crucible-judge-"));
+  const bin = opts.claudeBin ?? "claude";
+  const args = ["-p", opts.prompt, "--output-format", "json", "--max-turns", String(opts.maxTurns ?? 1)];
+  if (opts.model) args.push("--model", opts.model);
+  try {
+    const stdout = await new Promise<string>((resolve, reject) => {
+      const child = spawn(bin, args, { cwd: workdir, env: { ...process.env } });
+      let out = "";
+      let err = "";
+      const timer = setTimeout(() => {
+        child.kill("SIGKILL");
+        reject(new Error(`judge run exceeded ${opts.timeoutMs ?? 120_000}ms`));
+      }, opts.timeoutMs ?? 120_000);
+      child.stdout.on("data", (d) => (out += d));
+      child.stderr.on("data", (d) => (err += d));
+      child.on("error", (e) => {
+        clearTimeout(timer);
+        reject(new Error(`failed to spawn '${bin}': ${e.message}`));
+      });
+      child.on("close", () => {
+        clearTimeout(timer);
+        resolve(out);
+      });
+    });
+    return parseHeadless(stdout).result;
+  } finally {
+    await rm(workdir, { recursive: true, force: true });
+  }
+}

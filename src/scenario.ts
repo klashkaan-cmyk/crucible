@@ -24,9 +24,27 @@ const AssertionSpec = z
     command_succeeds: z.string().optional(),
     /** Total run cost (USD) must be at or below this ceiling. */
     cost_under: z.number().positive().optional(),
+    /** LLM-judge: score the run against this rubric (soft signal by default). */
+    judge: z.string().optional(),
+    /** Gate the judge: require score >= this (1-5). Opt-in; only valid with judge. */
+    min_score: z.number().min(1).max(5).optional(),
   })
-  .refine((o) => Object.values(o).some((v) => v !== undefined), {
-    message: "each assertion must specify exactly one check",
+  .refine(
+    (o) =>
+      [
+        o.file_exists,
+        o.file_matches,
+        o.subagent_invoked,
+        o.tool_invoked,
+        o.command_not_run,
+        o.command_succeeds,
+        o.cost_under,
+        o.judge,
+      ].some((v) => v !== undefined),
+    { message: "each assertion must specify a check" },
+  )
+  .refine((o) => o.min_score === undefined || o.judge !== undefined, {
+    message: "min_score is only valid together with judge",
   });
 
 const GateSpec = z.object({

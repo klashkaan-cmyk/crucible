@@ -20,6 +20,7 @@ import type { ScenarioResult, TrialResult } from "./types.js";
 
 export interface SuiteOptions {
   readonly configDir: string;
+  readonly judgeModel?: string;
   readonly scenarioDir: string;
   readonly claudeBin?: string;
   readonly keepWorkdirs?: boolean;
@@ -55,7 +56,10 @@ async function runOneTrial(
       maxTurns: scenario.max_turns,
       claudeBin: opts.claudeBin,
     });
-    const assertions = await evaluateAssertions(scenario.assert, run);
+    const assertions = await evaluateAssertions(scenario.assert, run, {
+      claudeBin: opts.claudeBin,
+      judgeModel: opts.judgeModel,
+    });
     const passed = assertions.every((a) => a.status === "pass") && !run.headless.isError;
     if (!opts.keepWorkdirs) await rm(run.workdir, { recursive: true, force: true });
     return {
