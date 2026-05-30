@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.4.0
+- New `crucible bisect`: binary-search the config's git history to find the commit that introduced a regression. Tests only config-touching commits, each in a throwaway `git worktree` (working tree untouched), ~log2(n) runs. Supports `--good/--bad`, `--scenario`, and `--baseline` as the bad signal.
+
 ## 0.3.0
 - New `crucible lint` command: deterministic, offline static checks on a `.claude` config (invalid settings JSON, hooks referencing missing scripts, subagents missing/duplicate names or descriptions, skills with no description that won't auto-activate, hardcoded secrets in CLAUDE.md/configs, oversized CLAUDE.md). No model calls, no cost; exits non-zero on errors. Secret patterns factored into a shared module.
 

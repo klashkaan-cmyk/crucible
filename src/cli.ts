@@ -27,13 +27,20 @@ import { acceptTerms, ConsentDeclined, ensureConsent, TERMS_SUMMARY } from "./co
 import { markdownSummary, printConsole, printRegressions, resultsToJson, writeJunit } from "./report.js";
 import { configFingerprint, discoverScenarios, runSuite, type SuiteOptions } from "./suite.js";
 import { countByLevel, lintConfig } from "./lint.js";
+import {
+  bisectFirstBad,
+  candidateCommits,
+  commitInfo,
+  resolveConfigRepo,
+  withWorktree,
+} from "./bisect.js";
 import { EXAMPLE_SCENARIO, EXAMPLE_WORKFLOW } from "./templates.js";
 import { configPath, isEnabled, loadConfig, maybeShowNotice, setEnabled, track } from "./telemetry.js";
 import { renderHtml, renderTerminal } from "./diffview.js";
 import { diffSteps, loadTranscript } from "./transcript.js";
 import type { ScenarioResult } from "./types.js";
 
-const VERSION = "0.3.0";
+const VERSION = "0.4.0";
 
 const program = new Command();
 
@@ -99,6 +106,19 @@ program
   .description("Diff two saved transcripts step-by-step; --html for a viewer")
   .option("--html <file>", "write a standalone HTML diff viewer")
   .action(diffCommand);
+
+program
+  .command("bisect")
+  .description("Find which config commit introduced a regression (git-bisect over the suite)")
+  .requiredOption("--good <ref>", "a commit/ref where the suite passed")
+  .option("--bad <ref>", "a commit/ref where it now fails", "HEAD")
+  .option("-c, --config <dir>", "config dir under test", ".claude")
+  .option("-s, --suite <dir>", "scenario suite", "crucible")
+  .option("--scenario <name>", "bisect on one scenario's gate (default: any gate fails)")
+  .option("-b, --baseline <file>", "treat any regression vs this baseline as bad")
+  .option("--claude-bin <path>", "path to the claude binary", "claude")
+  .option("--judge-model <model>", "model for LLM-judge assertions")
+  .action(bisectCommand);
 
 program
   .command("lint")
@@ -279,6 +299,75 @@ async function diffCommand(
     await writeFile(path.resolve(opts.html), renderHtml(a, b, rows));
     console.log(pc.dim(`\nHTML diff written to ${opts.html}`));
   }
+}
+
+async function bisectCommand(opts: {
+  good: string;
+  bad: string;
+  config: string;
+  suite: string;
+  scenario?: string;
+  baseline?: string;
+  claudeBin: string;
+  judgeModel?: string;
+}): Promise<void> {
+  try {
+    await ensureConsent();
+  } catch (err) {
+    if (err instanceof ConsentDeclined) process.exit(3);
+    throw err;
+  }
+
+  const repo = await resolveConfigRepo(path.resolve(opts.config));
+  const commits = await candidateCommits(repo, opts.good, opts.bad);
+  if (commits.length === 0) {
+    console.error(pc.yellow(`No commits touched ${repo.relConfig || "the repo"} in ${opts.good}..${opts.bad}.`));
+    process.exit(2);
+  }
+
+  const files = await requireScenarios(opts.suite);
+  const scenarioDir = path.resolve(opts.suite);
+  const baseline = opts.baseline ? await loadBaseline(opts.baseline) : null;
+  console.error(
+    pc.dim(`bisecting ${commits.length} config commit(s) -- ~${Math.ceil(Math.log2(commits.length + 1))} run(s)\n`),
+  );
+
+  const isBad = async (commit: string): Promise<boolean> => {
+    const info = await commitInfo(repo, commit);
+    return withWorktree(repo, commit, async (cfgDir) => {
+      const results = await runSuite(files, {
+        configDir: cfgDir,
+        scenarioDir,
+        claudeBin: opts.claudeBin,
+        keepWorkdirs: false,
+        ...(opts.judgeModel ? { judgeModel: opts.judgeModel } : {}),
+      });
+      let bad: boolean;
+      if (opts.scenario) {
+        const r = results.find((x) => x.name === opts.scenario);
+        bad = r ? !r.gatePassed : false;
+      } else if (baseline) {
+        bad = diffAgainstBaseline(results, baseline).length > 0;
+      } else {
+        bad = results.some((x) => !x.gatePassed);
+      }
+      console.error(`  ${bad ? pc.red("bad ") : pc.green("good")} ${info.sha} ${pc.dim(info.subject.slice(0, 60))}`);
+      return bad;
+    });
+  };
+
+  const { commit, tested } = await bisectFirstBad(commits, isBad);
+  console.error("");
+  if (!commit) {
+    console.log(pc.green(`No bad commit found among the candidates (${tested} run(s)).`));
+    process.exit(0);
+  }
+  const info = await commitInfo(repo, commit);
+  console.log(pc.red(`First bad config commit: ${info.sha}`));
+  console.log(`  ${info.subject}`);
+  console.log(pc.dim(`  ${info.author}, ${info.date}  (${tested} run(s))`));
+  console.log(pc.dim(`  inspect: git show ${info.sha} -- ${repo.relConfig || "."}`));
+  process.exit(0);
 }
 
 async function lintCommand(opts: { config: string; json?: boolean }): Promise<void> {

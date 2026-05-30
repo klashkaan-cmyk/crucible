@@ -172,6 +172,29 @@ continued use constitutes acceptance (set `CRUCIBLE_AGREE=1` to record it
 explicitly, or run `crucible agree`). The Terms cover the anonymous telemetry
 below and the MIT license; if you do not agree, do not use the tool.
 
+## Find the offending commit -- `crucible bisect`
+
+A scenario regressed but you don't know which `.claude/` change did it? Crucible
+binary-searches your git history for you:
+
+```bash
+crucible bisect --good v1.2.0 --suite crucible
+# or target one scenario, or use a baseline as the "bad" signal:
+crucible bisect --good HEAD~20 --scenario adds-login-endpoint-safely
+crucible bisect --good HEAD~20 --baseline crucible/baseline.json
+```
+
+It only tests commits that **touched the config**, each materialized in a
+throwaway `git worktree` (your working tree is never touched), and runs ~log2(n)
+suites to pinpoint the first bad commit:
+
+```
+First bad config commit: 51e0a19
+  refactor: tighten the security-reviewer description
+  alice, 2026-05-28  (2 run(s))
+  inspect: git show 51e0a19 -- .claude
+```
+
 ## Lint your config (instant, no model calls)
 
 Catch config mistakes statically -- free, offline, no API key needed:
