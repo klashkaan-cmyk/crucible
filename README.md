@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.svg" alt="Crucible" width="340">
+  <img src="https://raw.githubusercontent.com/klashkaan-cmyk/crucible/main/assets/logo.png" alt="Crucible" width="380">
 </p>
 
 
