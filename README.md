@@ -102,6 +102,19 @@ On the roadmap:
 
 Crucible never edits your real config. Each trial runs in `mkdtemp()` with `CLAUDE_CONFIG_DIR` pointed at the config under test and a generated `--settings` file that adds only the capture hooks. Delete-on-exit by default; pass `--keep-workdirs` to inspect a run.
 
+## Telemetry
+
+Crucible can send **anonymous** usage stats (CLI version, OS, command, and pass/fail
+counts) to help prioritize work. It **never** collects prompts, file contents, paths,
+or results, is disclosed on first run, and is off-network unless a collector is
+configured. Opt out anytime:
+
+```bash
+crucible telemetry off          # or: CRUCIBLE_TELEMETRY=0 / DO_NOT_TRACK=1
+```
+
+Full field list and rationale: [TELEMETRY.md](./TELEMETRY.md).
+
 ## Contributing
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md). Issues and scenario contributions welcome.

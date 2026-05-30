@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 /**
- * Crucible CLI. Two commands for v0.1:
- *   crucible run   - run a scenario suite against a .claude config
- *   crucible init  - drop an example scenario + GitHub Action into a repo
+ * Crucible CLI. Commands for v0.1:
+ *   crucible run        - run a scenario suite against a .claude config
+ *   crucible init       - drop an example scenario + GitHub Action into a repo
+ *   crucible telemetry  - view/toggle anonymous usage stats (see TELEMETRY.md)
  *
  * Exit code is non-zero when any scenario gate fails, so it gates CI directly.
  */
@@ -14,14 +15,24 @@ import pc from "picocolors";
 import { printConsole, writeJunit } from "./report.js";
 import { runScenarioFile } from "./suite.js";
 import { EXAMPLE_SCENARIO, EXAMPLE_WORKFLOW } from "./templates.js";
+import {
+  configPath,
+  isEnabled,
+  loadConfig,
+  maybeShowNotice,
+  setEnabled,
+  track,
+} from "./telemetry.js";
 import type { ScenarioResult } from "./types.js";
+
+const VERSION = "0.1.0";
 
 const program = new Command();
 
 program
   .name("crucible")
   .description("Regression CI for Claude Code configs (skills, subagents, hooks, CLAUDE.md)")
-  .version("0.1.0");
+  .version(VERSION);
 
 program
   .command("run")
@@ -39,6 +50,11 @@ program
   .option("-s, --suite <dir>", "where to write scenarios", "crucible")
   .action(initCommand);
 
+program
+  .command("telemetry [state]")
+  .description("Anonymous usage stats: 'on', 'off', or 'status' (default)")
+  .action(telemetryCommand);
+
 program.parseAsync(process.argv);
 
 async function runCommand(opts: {
@@ -48,6 +64,9 @@ async function runCommand(opts: {
   claudeBin: string;
   keepWorkdirs: boolean;
 }): Promise<void> {
+  const telemetry = await loadConfig();
+  await maybeShowNotice(telemetry);
+
   const configDir = path.resolve(opts.config);
   const scenarioDir = path.resolve(opts.suite);
   const files = await discoverScenarios(scenarioDir);
@@ -78,11 +97,19 @@ async function runCommand(opts: {
   }
 
   const failed = results.filter((r) => !r.gatePassed).length;
-  const total = (results.reduce((s, r) => s + r.medianCostUsd, 0)).toFixed(4);
+  const total = results.reduce((s, r) => s + r.medianCostUsd, 0).toFixed(4);
   console.log(
     `\n${failed === 0 ? pc.green("All gates passed") : pc.red(`${failed} gate(s) failed`)}` +
       pc.dim(`  ~$${total} total median cost`),
   );
+
+  // Coarse, non-identifying counts only. See TELEMETRY.md.
+  await track(telemetry, {
+    version: VERSION,
+    event: "run",
+    props: { scenarios: results.length, gates_failed: failed },
+  });
+
   process.exit(failed === 0 ? 0 : 1);
 }
 
@@ -96,6 +123,25 @@ async function initCommand(opts: { suite: string }): Promise<void> {
   console.log(pc.green("Scaffolded:"));
   console.log(`  ${path.join(opts.suite, "example.scenario.yaml")}`);
   console.log(`  .github/workflows/crucible.yml`);
+}
+
+async function telemetryCommand(state?: string): Promise<void> {
+  const normalized = (state ?? "status").toLowerCase();
+  if (normalized === "on" || normalized === "enable") {
+    await setEnabled(true);
+    console.log(pc.green("Telemetry enabled.") + pc.dim(" Anonymous stats only; see TELEMETRY.md."));
+    return;
+  }
+  if (normalized === "off" || normalized === "disable") {
+    await setEnabled(false);
+    console.log(pc.yellow("Telemetry disabled.") + pc.dim(" No data will be sent."));
+    return;
+  }
+  const cfg = await loadConfig();
+  const on = isEnabled(cfg);
+  console.log(`Telemetry: ${on ? pc.green("on") : pc.yellow("off")}`);
+  console.log(pc.dim(`Config: ${configPath()}`));
+  console.log(pc.dim("Toggle with `crucible telemetry on|off`, or CRUCIBLE_TELEMETRY=0 / DO_NOT_TRACK=1."));
 }
 
 async function discoverScenarios(dir: string): Promise<string[]> {
