@@ -4,6 +4,8 @@
  *   crucible run        - run a scenario suite against a .claude config
  *   crucible init       - drop an example scenario + GitHub Action into a repo
  *   crucible telemetry  - view/toggle anonymous usage stats (see TELEMETRY.md)
+ *   crucible agree      - record acceptance of the Terms (TERMS.md)
+ *   crucible terms      - print the Terms summary
  *
  * Exit code is non-zero when any scenario gate fails, so it gates CI directly.
  */
@@ -12,20 +14,14 @@ import { readdir, mkdir, writeFile, access } from "node:fs/promises";
 import path from "node:path";
 import { Command } from "commander";
 import pc from "picocolors";
+import { acceptTerms, ConsentDeclined, ensureConsent, TERMS_SUMMARY } from "./consent.js";
 import { printConsole, writeJunit } from "./report.js";
 import { runScenarioFile } from "./suite.js";
 import { EXAMPLE_SCENARIO, EXAMPLE_WORKFLOW } from "./templates.js";
-import {
-  configPath,
-  isEnabled,
-  loadConfig,
-  maybeShowNotice,
-  setEnabled,
-  track,
-} from "./telemetry.js";
+import { configPath, isEnabled, loadConfig, maybeShowNotice, setEnabled, track } from "./telemetry.js";
 import type { ScenarioResult } from "./types.js";
 
-const VERSION = "0.1.0";
+const VERSION = "0.1.1";
 
 const program = new Command();
 
@@ -55,6 +51,21 @@ program
   .description("Anonymous usage stats: 'on', 'off', or 'status' (default)")
   .action(telemetryCommand);
 
+program
+  .command("agree")
+  .description("Record acceptance of the Terms & Conditions (TERMS.md)")
+  .action(async () => {
+    await acceptTerms();
+    console.log(pc.green("Terms accepted.") + pc.dim(" Thanks -- you're set."));
+  });
+
+program
+  .command("terms")
+  .description("Print the Terms summary")
+  .action(() => {
+    console.log(TERMS_SUMMARY);
+  });
+
 program.parseAsync(process.argv);
 
 async function runCommand(opts: {
@@ -64,7 +75,17 @@ async function runCommand(opts: {
   claudeBin: string;
   keepWorkdirs: boolean;
 }): Promise<void> {
-  const telemetry = await loadConfig();
+  let telemetry;
+  try {
+    telemetry = await ensureConsent();
+  } catch (err) {
+    if (err instanceof ConsentDeclined) {
+      console.error(pc.yellow("\nTerms not accepted -- nothing was run."));
+      console.error(pc.dim("Uninstall with `npm rm -g crucible-ci` if you do not agree."));
+      process.exit(3);
+    }
+    throw err;
+  }
   await maybeShowNotice(telemetry);
 
   const configDir = path.resolve(opts.config);

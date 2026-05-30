@@ -20,6 +20,8 @@ export interface TelemetryConfig {
   enabled: boolean;
   anonymousId: string;
   noticeShown: boolean;
+  /** Whether the user has accepted the Terms (see TERMS.md). */
+  termsAccepted: boolean;
 }
 
 /**
@@ -55,9 +57,10 @@ export async function loadConfig(): Promise<TelemetryConfig> {
       enabled: obj.enabled ?? true,
       anonymousId: obj.anonymousId ?? randomUUID(),
       noticeShown: obj.noticeShown ?? false,
+      termsAccepted: obj.termsAccepted ?? false,
     };
   } catch {
-    return { enabled: true, anonymousId: randomUUID(), noticeShown: false };
+    return { enabled: true, anonymousId: randomUUID(), noticeShown: false, termsAccepted: false };
   }
 }
 

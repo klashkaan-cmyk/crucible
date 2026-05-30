@@ -102,6 +102,14 @@ On the roadmap:
 
 Crucible never edits your real config. Each trial runs in `mkdtemp()` with `CLAUDE_CONFIG_DIR` pointed at the config under test and a generated `--settings` file that adds only the capture hooks. Delete-on-exit by default; pass `--keep-workdirs` to inspect a run.
 
+## Terms & consent
+
+On first run, Crucible shows its [Terms & Conditions](./TERMS.md) and asks you to
+accept. Accepting is one-time and stored locally. In CI / non-interactive use,
+continued use constitutes acceptance (set `CRUCIBLE_AGREE=1` to record it
+explicitly, or run `crucible agree`). The Terms cover the anonymous telemetry
+below and the MIT license; if you do not agree, do not use the tool.
+
 ## Telemetry
 
 Crucible can send **anonymous** usage stats (CLI version, OS, command, and pass/fail
