@@ -1,27 +1,35 @@
 #!/usr/bin/env node
 /**
- * Crucible CLI. Commands for v0.1:
+ * Crucible CLI.
  *   crucible run        - run a scenario suite against a .claude config
+ *   crucible baseline   - capture a baseline snapshot for regression diffing
  *   crucible init       - drop an example scenario + GitHub Action into a repo
  *   crucible telemetry  - view/toggle anonymous usage stats (see TELEMETRY.md)
  *   crucible agree      - record acceptance of the Terms (TERMS.md)
  *   crucible terms      - print the Terms summary
  *
- * Exit code is non-zero when any scenario gate fails, so it gates CI directly.
+ * Exit code is non-zero when any scenario gate fails (or a regression is found
+ * with --fail-on-regression), so it gates CI directly.
  */
 
-import { readdir, mkdir, writeFile, access } from "node:fs/promises";
+import { mkdir, writeFile, access } from "node:fs/promises";
 import path from "node:path";
 import { Command } from "commander";
 import pc from "picocolors";
+import {
+  diffAgainstBaseline,
+  loadBaseline,
+  toBaseline,
+  writeBaseline,
+} from "./baseline.js";
 import { acceptTerms, ConsentDeclined, ensureConsent, TERMS_SUMMARY } from "./consent.js";
-import { printConsole, writeJunit } from "./report.js";
-import { runScenarioFile } from "./suite.js";
+import { printConsole, printRegressions, writeJunit } from "./report.js";
+import { configFingerprint, discoverScenarios, runSuite, type SuiteOptions } from "./suite.js";
 import { EXAMPLE_SCENARIO, EXAMPLE_WORKFLOW } from "./templates.js";
 import { configPath, isEnabled, loadConfig, maybeShowNotice, setEnabled, track } from "./telemetry.js";
 import type { ScenarioResult } from "./types.js";
 
-const VERSION = "0.1.2";
+const VERSION = "0.1.3";
 
 const program = new Command();
 
@@ -36,9 +44,20 @@ program
   .option("-c, --config <dir>", "config dir under test (CLAUDE_CONFIG_DIR)", ".claude")
   .option("-s, --suite <dir>", "directory of *.scenario.yaml files", "crucible")
   .option("-o, --junit <file>", "write JUnit XML report to this path")
+  .option("-b, --baseline <file>", "compare results against a baseline file")
+  .option("--fail-on-regression", "exit non-zero if any regression is found", false)
   .option("--claude-bin <path>", "path to the claude binary", "claude")
   .option("--keep-workdirs", "do not delete trial working copies (debugging)", false)
   .action(runCommand);
+
+program
+  .command("baseline")
+  .description("Run the suite and save a baseline snapshot for later regression diffs")
+  .option("-c, --config <dir>", "config dir under test (CLAUDE_CONFIG_DIR)", ".claude")
+  .option("-s, --suite <dir>", "directory of *.scenario.yaml files", "crucible")
+  .option("-o, --out <file>", "where to write the baseline", "crucible/baseline.json")
+  .option("--claude-bin <path>", "path to the claude binary", "claude")
+  .action(baselineCommand);
 
 program
   .command("init")
@@ -62,16 +81,36 @@ program
 program
   .command("terms")
   .description("Print the Terms summary")
-  .action(() => {
-    console.log(TERMS_SUMMARY);
-  });
+  .action(() => console.log(TERMS_SUMMARY));
 
 program.parseAsync(process.argv);
+
+function suiteOptions(opts: { config: string; claudeBin: string; keepWorkdirs?: boolean }): SuiteOptions {
+  return {
+    configDir: path.resolve(opts.config),
+    scenarioDir: "",
+    claudeBin: opts.claudeBin,
+    keepWorkdirs: opts.keepWorkdirs ?? false,
+  };
+}
+
+async function requireScenarios(suiteDir: string): Promise<string[]> {
+  const dir = path.resolve(suiteDir);
+  const files = await discoverScenarios(dir);
+  if (files.length === 0) {
+    console.error(pc.yellow(`No *.scenario.yaml files found in ${dir}`));
+    console.error(`Run ${pc.cyan("crucible init")} to create one.`);
+    process.exit(2);
+  }
+  return files;
+}
 
 async function runCommand(opts: {
   config: string;
   suite: string;
   junit?: string;
+  baseline?: string;
+  failOnRegression: boolean;
   claudeBin: string;
   keepWorkdirs: boolean;
 }): Promise<void> {
@@ -88,50 +127,69 @@ async function runCommand(opts: {
   }
   await maybeShowNotice(telemetry);
 
-  const configDir = path.resolve(opts.config);
-  const scenarioDir = path.resolve(opts.suite);
-  const files = await discoverScenarios(scenarioDir);
-  if (files.length === 0) {
-    console.error(pc.yellow(`No *.scenario.yaml files found in ${scenarioDir}`));
-    console.error(`Run ${pc.cyan("crucible init")} to create one.`);
-    process.exit(2);
-  }
+  const files = await requireScenarios(opts.suite);
+  const suiteOpts = { ...suiteOptions(opts), scenarioDir: path.resolve(opts.suite) };
+  console.log(pc.dim(`config: ${suiteOpts.configDir}  scenarios: ${files.length}\n`));
 
-  console.log(pc.dim(`config: ${configDir}  scenarios: ${files.length}\n`));
-  const results: ScenarioResult[] = [];
-  for (const file of files) {
-    results.push(
-      await runScenarioFile(file, {
-        configDir,
-        scenarioDir,
-        claudeBin: opts.claudeBin,
-        keepWorkdirs: opts.keepWorkdirs,
-      }),
-    );
-  }
+  const results = await runSuite(files, suiteOpts);
 
   console.log();
   printConsole(results);
+
+  let regressionCount = 0;
+  if (opts.baseline) {
+    const baseline = await loadBaseline(opts.baseline);
+    const regressions = diffAgainstBaseline(results, baseline);
+    regressionCount = regressions.length;
+    printRegressions(regressions);
+  }
+
   if (opts.junit) {
     await writeJunit(opts.junit, results);
     console.log(pc.dim(`\nJUnit report written to ${opts.junit}`));
   }
 
-  const failed = results.filter((r) => !r.gatePassed).length;
+  const gatesFailed = results.filter((r) => !r.gatePassed).length;
   const total = results.reduce((s, r) => s + r.medianCostUsd, 0).toFixed(4);
   console.log(
-    `\n${failed === 0 ? pc.green("All gates passed") : pc.red(`${failed} gate(s) failed`)}` +
+    `\n${gatesFailed === 0 ? pc.green("All gates passed") : pc.red(`${gatesFailed} gate(s) failed`)}` +
       pc.dim(`  ~$${total} total median cost`),
   );
 
-  // Coarse, non-identifying counts only. See TELEMETRY.md.
   await track(telemetry, {
     version: VERSION,
     event: "run",
-    props: { scenarios: results.length, gates_failed: failed },
+    props: { scenarios: results.length, gates_failed: gatesFailed, regressions: regressionCount },
   });
 
-  process.exit(failed === 0 ? 0 : 1);
+  const failed = gatesFailed > 0 || (opts.failOnRegression && regressionCount > 0);
+  process.exit(failed ? 1 : 0);
+}
+
+async function baselineCommand(opts: {
+  config: string;
+  suite: string;
+  out: string;
+  claudeBin: string;
+}): Promise<void> {
+  const telemetry = await ensureConsent();
+  await maybeShowNotice(telemetry);
+
+  const files = await requireScenarios(opts.suite);
+  const suiteOpts = { ...suiteOptions(opts), scenarioDir: path.resolve(opts.suite) };
+  console.log(pc.dim(`Capturing baseline from ${files.length} scenario(s)...\n`));
+
+  const results: ScenarioResult[] = await runSuite(files, suiteOpts);
+  printConsole(results);
+
+  const configRef = await configFingerprint(suiteOpts.configDir);
+  const baseline = toBaseline(results, { configRef });
+  await mkdir(path.dirname(path.resolve(opts.out)), { recursive: true });
+  await writeBaseline(path.resolve(opts.out), baseline);
+  console.log(
+    pc.green(`\nBaseline saved to ${opts.out}`) +
+      pc.dim(configRef ? `  (config @ ${configRef})` : ""),
+  );
 }
 
 async function initCommand(opts: { suite: string }): Promise<void> {
@@ -163,19 +221,6 @@ async function telemetryCommand(state?: string): Promise<void> {
   console.log(`Telemetry: ${on ? pc.green("on") : pc.yellow("off")}`);
   console.log(pc.dim(`Config: ${configPath()}`));
   console.log(pc.dim("Toggle with `crucible telemetry on|off`, or CRUCIBLE_TELEMETRY=0 / DO_NOT_TRACK=1."));
-}
-
-async function discoverScenarios(dir: string): Promise<string[]> {
-  let entries: string[];
-  try {
-    entries = await readdir(dir);
-  } catch {
-    return [];
-  }
-  return entries
-    .filter((e) => e.endsWith(".scenario.yaml") || e.endsWith(".scenario.yml"))
-    .map((e) => path.join(dir, e))
-    .sort();
 }
 
 async function writeIfAbsent(file: string, content: string): Promise<void> {

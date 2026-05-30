@@ -78,6 +78,21 @@ gate:
 | `command_succeeds: cmd` | the command exits 0 in the workdir |
 | `cost_under: usd` | the run's `total_cost_usd` stayed under the ceiling |
 
+## Baselines & regression detection
+
+The whole point of *regression* CI: catch a config change that makes the agent
+quietly worse, even when no single scenario newly fails its own gate.
+
+```bash
+crucible baseline --config .claude --suite crucible   # snapshot known-good -> crucible/baseline.json
+# ...later, on a PR that edits .claude/ ...
+crucible run --config .claude --suite crucible --baseline crucible/baseline.json --fail-on-regression
+```
+
+A regression is reported when, versus the baseline, a scenario's pass rate drops
+past a threshold, a previously **stable** scenario becomes **flaky**, or median
+cost jumps significantly. With `--fail-on-regression` these fail the build.
+
 ## CI
 
 `crucible init` drops a ready GitHub Action that runs on changes to `.claude/**`. It installs Claude Code + Crucible, runs the suite, and uploads the JUnit report. Set `ANTHROPIC_API_KEY` as a repo secret.

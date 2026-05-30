@@ -6,6 +6,7 @@
 
 import { writeFile } from "node:fs/promises";
 import pc from "picocolors";
+import type { Regression } from "./baseline.js";
 import type { ScenarioResult } from "./types.js";
 
 export function printConsole(results: ReadonlyArray<ScenarioResult>): void {
@@ -62,4 +63,15 @@ function escapeXml(s: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+export function printRegressions(regressions: ReadonlyArray<Regression>): void {
+  if (regressions.length === 0) {
+    console.log(pc.green("No regressions vs baseline."));
+    return;
+  }
+  console.log(pc.red(`\n${regressions.length} regression(s) vs baseline:`));
+  for (const r of regressions) {
+    console.log(`  ${pc.red(r.kind)} ${pc.bold(r.name)}: ${r.detail}`);
+  }
 }
