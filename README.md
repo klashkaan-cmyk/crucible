@@ -110,6 +110,22 @@ A regression is reported when, versus the baseline, a scenario's pass rate drops
 past a threshold, a previously **stable** scenario becomes **flaky**, or median
 cost jumps significantly. With `--fail-on-regression` these fail the build.
 
+## Transcript-diff viewer
+
+When a scenario regresses, see *why* -- diff what the agent actually did, step by
+step. Save transcripts on a known-good run and a later run, then diff them:
+
+```bash
+crucible run --suite crucible --save-transcripts .crucible/good
+# ...after a config change...
+crucible run --suite crucible --save-transcripts .crucible/new
+crucible diff .crucible/good/login.trial0.json .crucible/new/login.trial0.json --html diff.html
+```
+
+The terminal shows an aligned, color-coded step diff (tools + subagents, with
+their inputs) plus turn/cost deltas; `--html` writes a standalone, dependency-free
+viewer with the two runs side by side and both final messages in full.
+
 ## CI
 
 `crucible init` drops a ready GitHub Action that runs on changes to `.claude/**`. It installs Claude Code + Crucible, runs the suite, and uploads the JUnit report. Set `ANTHROPIC_API_KEY` as a repo secret.

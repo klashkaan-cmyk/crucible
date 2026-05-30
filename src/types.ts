@@ -36,6 +36,8 @@ export interface TrialRun {
 export interface Invocation {
   readonly type: "tool" | "subagent";
   readonly name: string;
+  /** Short, human-readable summary of the tool input (command/file/etc). */
+  readonly summary?: string;
 }
 
 export interface TrialResult {

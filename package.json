@@ -1,6 +1,6 @@
 {
   "name": "crucible-ci",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Regression CI for Claude Code configs. Treat your .claude/ (skills, subagents, hooks, CLAUDE.md) as code under test.",
   "type": "module",
   "bin": {

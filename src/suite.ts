@@ -16,11 +16,13 @@ import { evaluateAssertions } from "./assertions.js";
 import { loadScenario, type Scenario } from "./scenario.js";
 import { runTrial } from "./runner.js";
 import { aggregate } from "./stats.js";
+import { fromRun, saveTranscript } from "./transcript.js";
 import type { ScenarioResult, TrialResult } from "./types.js";
 
 export interface SuiteOptions {
   readonly configDir: string;
   readonly judgeModel?: string;
+  readonly saveTranscriptsDir?: string;
   readonly scenarioDir: string;
   readonly claudeBin?: string;
   readonly keepWorkdirs?: boolean;
@@ -61,6 +63,9 @@ async function runOneTrial(
       judgeModel: opts.judgeModel,
     });
     const passed = assertions.every((a) => a.status === "pass") && !run.headless.isError;
+    if (opts.saveTranscriptsDir) {
+      await saveTranscript(opts.saveTranscriptsDir, fromRun(scenario.name, index, run));
+    }
     if (!opts.keepWorkdirs) await rm(run.workdir, { recursive: true, force: true });
     return {
       index,

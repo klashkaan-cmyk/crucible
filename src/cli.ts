@@ -27,9 +27,11 @@ import { printConsole, printRegressions, writeJunit } from "./report.js";
 import { configFingerprint, discoverScenarios, runSuite, type SuiteOptions } from "./suite.js";
 import { EXAMPLE_SCENARIO, EXAMPLE_WORKFLOW } from "./templates.js";
 import { configPath, isEnabled, loadConfig, maybeShowNotice, setEnabled, track } from "./telemetry.js";
+import { renderHtml, renderTerminal } from "./diffview.js";
+import { diffSteps, loadTranscript } from "./transcript.js";
 import type { ScenarioResult } from "./types.js";
 
-const VERSION = "0.1.4";
+const VERSION = "0.1.5";
 
 const program = new Command();
 
@@ -48,6 +50,7 @@ program
   .option("--fail-on-regression", "exit non-zero if any regression is found", false)
   .option("--claude-bin <path>", "path to the claude binary", "claude")
   .option("--judge-model <model>", "model for LLM-judge assertions (default: CC default)")
+  .option("--save-transcripts <dir>", "save each trial transcript for later `crucible diff`")
   .option("--keep-workdirs", "do not delete trial working copies (debugging)", false)
   .action(runCommand);
 
@@ -59,6 +62,7 @@ program
   .option("-o, --out <file>", "where to write the baseline", "crucible/baseline.json")
   .option("--claude-bin <path>", "path to the claude binary", "claude")
   .option("--judge-model <model>", "model for LLM-judge assertions (default: CC default)")
+  .option("--save-transcripts <dir>", "save each trial transcript alongside the baseline")
   .action(baselineCommand);
 
 program
@@ -85,12 +89,19 @@ program
   .description("Print the Terms summary")
   .action(() => console.log(TERMS_SUMMARY));
 
+program
+  .command("diff <baseline> <current>")
+  .description("Diff two saved transcripts step-by-step; --html for a viewer")
+  .option("--html <file>", "write a standalone HTML diff viewer")
+  .action(diffCommand);
+
 program.parseAsync(process.argv);
 
 function suiteOptions(opts: {
   config: string;
   claudeBin: string;
   judgeModel?: string;
+  saveTranscripts?: string;
   keepWorkdirs?: boolean;
 }): SuiteOptions {
   return {
@@ -99,6 +110,7 @@ function suiteOptions(opts: {
     claudeBin: opts.claudeBin,
     keepWorkdirs: opts.keepWorkdirs ?? false,
     ...(opts.judgeModel ? { judgeModel: opts.judgeModel } : {}),
+    ...(opts.saveTranscripts ? { saveTranscriptsDir: path.resolve(opts.saveTranscripts) } : {}),
   };
 }
 
@@ -121,6 +133,7 @@ async function runCommand(opts: {
   failOnRegression: boolean;
   claudeBin: string;
   judgeModel?: string;
+  saveTranscripts?: string;
   keepWorkdirs: boolean;
 }): Promise<void> {
   let telemetry;
@@ -181,6 +194,7 @@ async function baselineCommand(opts: {
   out: string;
   claudeBin: string;
   judgeModel?: string;
+  saveTranscripts?: string;
 }): Promise<void> {
   const telemetry = await ensureConsent();
   await maybeShowNotice(telemetry);
@@ -231,6 +245,21 @@ async function telemetryCommand(state?: string): Promise<void> {
   console.log(`Telemetry: ${on ? pc.green("on") : pc.yellow("off")}`);
   console.log(pc.dim(`Config: ${configPath()}`));
   console.log(pc.dim("Toggle with `crucible telemetry on|off`, or CRUCIBLE_TELEMETRY=0 / DO_NOT_TRACK=1."));
+}
+
+async function diffCommand(
+  baselineFile: string,
+  currentFile: string,
+  opts: { html?: string },
+): Promise<void> {
+  const a = await loadTranscript(baselineFile);
+  const b = await loadTranscript(currentFile);
+  const rows = diffSteps(a.steps, b.steps);
+  console.log(renderTerminal(a, b, rows));
+  if (opts.html) {
+    await writeFile(path.resolve(opts.html), renderHtml(a, b, rows));
+    console.log(pc.dim(`\nHTML diff written to ${opts.html}`));
+  }
 }
 
 async function writeIfAbsent(file: string, content: string): Promise<void> {

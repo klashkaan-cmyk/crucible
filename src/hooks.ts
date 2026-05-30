@@ -18,11 +18,15 @@ import type { Invocation } from "./types.js";
  * runtime dependency is node itself (already present wherever Claude Code runs).
  */
 export function buildCaptureSettings(logPath: string): unknown {
+  const nameExpr = (type: string) =>
+    type === "tool" ? "j.tool_name" : 'j.subagent_type||j.agent_type||"subagent"';
   const append = (type: string) =>
     `node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{` +
     `try{const j=JSON.parse(d);` +
-    `const name=${type === "tool" ? "j.tool_name" : 'j.subagent_type||j.agent_type||"subagent"'};` +
-    `require("fs").appendFileSync(process.env.CRUCIBLE_LOG,JSON.stringify({type:"${type}",name})+"\\n");` +
+    `const name=${nameExpr(type)};` +
+    `const ti=j.tool_input||{};` +
+    `const summary=String(ti.command||ti.file_path||ti.path||ti.pattern||ti.url||ti.description||"").slice(0,100);` +
+    `require("fs").appendFileSync(process.env.CRUCIBLE_LOG,JSON.stringify({type:"${type}",name,summary})+"\\n");` +
     `}catch(e){}})'`;
 
   return {
@@ -58,7 +62,11 @@ export async function readInvocations(logPath: string): Promise<Invocation[]> {
     try {
       const obj = JSON.parse(trimmed) as Invocation;
       if (obj && (obj.type === "tool" || obj.type === "subagent") && obj.name) {
-        out.push({ type: obj.type, name: obj.name });
+        out.push({
+          type: obj.type,
+          name: obj.name,
+          ...(obj.summary ? { summary: obj.summary } : {}),
+        });
       }
     } catch {
       // skip malformed capture lines
