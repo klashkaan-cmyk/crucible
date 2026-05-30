@@ -23,6 +23,7 @@ export interface SuiteOptions {
   readonly configDir: string;
   readonly judgeModel?: string;
   readonly saveTranscriptsDir?: string;
+  readonly concurrency?: number;
   readonly scenarioDir: string;
   readonly claudeBin?: string;
   readonly keepWorkdirs?: boolean;
@@ -37,10 +38,10 @@ export async function runScenarioFile(
     ? path.resolve(path.dirname(file), scenario.fixture)
     : undefined;
 
-  const trials: TrialResult[] = [];
-  for (let i = 0; i < scenario.trials; i++) {
-    trials.push(await runOneTrial(i, scenario, fixtureDir, opts));
-  }
+  const indices = Array.from({ length: scenario.trials }, (_, i) => i);
+  const limit = Math.max(1, opts.concurrency ?? 1);
+  const trials = await pool(indices, limit, (i) => runOneTrial(i, scenario, fixtureDir, opts));
+  trials.sort((a, b) => a.index - b.index);
   return aggregate(scenario, trials);
 }
 
@@ -120,4 +121,18 @@ export async function configFingerprint(configDir: string): Promise<string | und
   } catch {
     return undefined;
   }
+}
+
+/** Run `fn` over items with at most `size` in flight; preserves no order. */
+async function pool<T, R>(items: ReadonlyArray<T>, size: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = [];
+  let next = 0;
+  async function worker(): Promise<void> {
+    while (next < items.length) {
+      const idx = next++;
+      results.push(await fn(items[idx]!));
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(size, items.length) }, () => worker()));
+  return results;
 }

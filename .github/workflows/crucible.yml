@@ -20,7 +20,7 @@ jobs:
       - name: Run regression suite
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: crucible run --config .claude --suite crucible --junit crucible-results.xml
+        run: crucible run --config .claude --suite crucible --junit crucible-results.xml --markdown "$GITHUB_STEP_SUMMARY"
       - name: Publish results
         if: always()
         uses: actions/upload-artifact@v4

@@ -28,6 +28,10 @@ const AssertionSpec = z
     judge: z.string().optional(),
     /** Gate the judge: require score >= this (1-5). Opt-in; only valid with judge. */
     min_score: z.number().min(1).max(5).optional(),
+    /** A file (relative to the workdir) must NOT exist after the run. */
+    file_absent: z.string().optional(),
+    /** No produced file may contain a hardcoded secret (keys, tokens, private keys). */
+    no_secrets: z.boolean().optional(),
   })
   .refine(
     (o) =>
@@ -40,6 +44,8 @@ const AssertionSpec = z
         o.command_succeeds,
         o.cost_under,
         o.judge,
+        o.file_absent,
+        o.no_secrets,
       ].some((v) => v !== undefined),
     { message: "each assertion must specify a check" },
   )

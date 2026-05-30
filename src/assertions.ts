@@ -6,7 +6,7 @@
  */
 
 import { execFile } from "node:child_process";
-import { access, readFile } from "node:fs/promises";
+import { access, readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { runJudge } from "./judge.js";
@@ -41,6 +41,8 @@ async function evaluateOne(
   if (spec.command_succeeds !== undefined) return checkCommandSucceeds(spec.command_succeeds, run.workdir);
   if (spec.cost_under !== undefined) return checkCostUnder(spec.cost_under, run);
   if (spec.judge !== undefined) return checkJudge(spec.judge, spec.min_score, run, opts);
+  if (spec.file_absent !== undefined) return checkFileAbsent(spec.file_absent, run.workdir);
+  if (spec.no_secrets) return checkNoSecrets(run.workdir);
   return { kind: "unknown", status: "error", message: "no recognized assertion key" };
 }
 
@@ -145,6 +147,69 @@ async function checkJudge(
   return score >= minScore
     ? { kind, status: "pass", message: `score ${score}/5 >= ${minScore}${reason ? ` - ${reason}` : ""}` }
     : { kind, status: "fail", message: `score ${score}/5 < ${minScore}${reason ? ` - ${reason}` : ""}` };
+}
+
+async function checkFileAbsent(rel: string, workdir: string): Promise<AssertionResult> {
+  const kind = `file_absent:${rel}`;
+  try {
+    await access(path.join(workdir, rel));
+    return { kind, status: "fail", message: `${rel} should not exist but does` };
+  } catch {
+    return { kind, status: "pass", message: `${rel} is absent` };
+  }
+}
+
+const SECRET_PATTERNS: ReadonlyArray<{ name: string; re: RegExp }> = [
+  { name: "aws-access-key", re: /AKIA[0-9A-Z]{16}/ },
+  { name: "private-key", re: /-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/ },
+  { name: "openai-key", re: /sk-[A-Za-z0-9]{20,}/ },
+  { name: "github-token", re: /gh[pousr]_[A-Za-z0-9]{20,}/ },
+  { name: "generic-secret", re: /(?:api[_-]?key|secret|token|password)\s*[:=]\s*["'][^"']{8,}["']/i },
+];
+
+const SECRET_SKIP_DIRS = new Set(["node_modules", ".git", ".crucible"]);
+const SECRET_MAX_FILE = 200_000;
+
+async function checkNoSecrets(workdir: string): Promise<AssertionResult> {
+  const kind = "no_secrets";
+  const hit = await scanForSecret(workdir, workdir);
+  return hit
+    ? { kind, status: "fail", message: `possible ${hit.name} in ${hit.rel}` }
+    : { kind, status: "pass", message: "no hardcoded secrets detected" };
+}
+
+async function scanForSecret(
+  dir: string,
+  root: string,
+): Promise<{ name: string; rel: string } | null> {
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  for (const entry of entries) {
+    if (entry.isDirectory()) {
+      if (SECRET_SKIP_DIRS.has(entry.name) || entry.name.startsWith(".crucible")) continue;
+      const found = await scanForSecret(path.join(dir, entry.name), root);
+      if (found) return found;
+      continue;
+    }
+    const full = path.join(dir, entry.name);
+    try {
+      const info = await stat(full);
+      if (info.size > SECRET_MAX_FILE) continue;
+      const buf = await readFile(full);
+      if (buf.includes(0)) continue;
+      const content = buf.toString("utf8");
+      for (const { name, re } of SECRET_PATTERNS) {
+        if (re.test(content)) return { name, rel: path.relative(root, full) };
+      }
+    } catch {
+      // unreadable -> skip
+    }
+  }
+  return null;
 }
 
 function globToRegExp(glob: string): RegExp {

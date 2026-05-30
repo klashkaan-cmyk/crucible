@@ -12,7 +12,7 @@
  * with --fail-on-regression), so it gates CI directly.
  */
 
-import { mkdir, writeFile, access } from "node:fs/promises";
+import { appendFile, mkdir, writeFile, access } from "node:fs/promises";
 import path from "node:path";
 import { Command } from "commander";
 import pc from "picocolors";
@@ -21,9 +21,10 @@ import {
   loadBaseline,
   toBaseline,
   writeBaseline,
+  type Regression,
 } from "./baseline.js";
 import { acceptTerms, ConsentDeclined, ensureConsent, TERMS_SUMMARY } from "./consent.js";
-import { printConsole, printRegressions, writeJunit } from "./report.js";
+import { markdownSummary, printConsole, printRegressions, resultsToJson, writeJunit } from "./report.js";
 import { configFingerprint, discoverScenarios, runSuite, type SuiteOptions } from "./suite.js";
 import { EXAMPLE_SCENARIO, EXAMPLE_WORKFLOW } from "./templates.js";
 import { configPath, isEnabled, loadConfig, maybeShowNotice, setEnabled, track } from "./telemetry.js";
@@ -31,7 +32,7 @@ import { renderHtml, renderTerminal } from "./diffview.js";
 import { diffSteps, loadTranscript } from "./transcript.js";
 import type { ScenarioResult } from "./types.js";
 
-const VERSION = "0.1.8";
+const VERSION = "0.2.0";
 
 const program = new Command();
 
@@ -48,6 +49,9 @@ program
   .option("-o, --junit <file>", "write JUnit XML report to this path")
   .option("-b, --baseline <file>", "compare results against a baseline file")
   .option("--fail-on-regression", "exit non-zero if any regression is found", false)
+  .option("--json", "output results as JSON to stdout", false)
+  .option("--markdown <file>", "append a Markdown summary (e.g. $GITHUB_STEP_SUMMARY)")
+  .option("--concurrency <n>", "run up to N trials in parallel (default 1)")
   .option("--claude-bin <path>", "path to the claude binary", "claude")
   .option("--judge-model <model>", "model for LLM-judge assertions (default: CC default)")
   .option("--save-transcripts <dir>", "save each trial transcript for later `crucible diff`")
@@ -102,13 +106,16 @@ function suiteOptions(opts: {
   claudeBin: string;
   judgeModel?: string;
   saveTranscripts?: string;
+  concurrency?: string;
   keepWorkdirs?: boolean;
 }): SuiteOptions {
+  const concurrency = opts.concurrency ? Math.max(1, parseInt(opts.concurrency, 10) || 1) : 1;
   return {
     configDir: path.resolve(opts.config),
     scenarioDir: "",
     claudeBin: opts.claudeBin,
     keepWorkdirs: opts.keepWorkdirs ?? false,
+    concurrency,
     ...(opts.judgeModel ? { judgeModel: opts.judgeModel } : {}),
     ...(opts.saveTranscripts ? { saveTranscriptsDir: path.resolve(opts.saveTranscripts) } : {}),
   };
@@ -131,6 +138,9 @@ async function runCommand(opts: {
   junit?: string;
   baseline?: string;
   failOnRegression: boolean;
+  json?: boolean;
+  markdown?: string;
+  concurrency?: string;
   claudeBin: string;
   judgeModel?: string;
   saveTranscripts?: string;
@@ -151,40 +161,41 @@ async function runCommand(opts: {
 
   const files = await requireScenarios(opts.suite);
   const suiteOpts = { ...suiteOptions(opts), scenarioDir: path.resolve(opts.suite) };
-  console.log(pc.dim(`config: ${suiteOpts.configDir}  scenarios: ${files.length}\n`));
+  console.error(pc.dim(`config: ${suiteOpts.configDir}  scenarios: ${files.length}\n`));
 
   const results = await runSuite(files, suiteOpts);
 
-  console.log();
-  printConsole(results);
-
-  let regressionCount = 0;
+  let regressions: Regression[] = [];
   if (opts.baseline) {
-    const baseline = await loadBaseline(opts.baseline);
-    const regressions = diffAgainstBaseline(results, baseline);
-    regressionCount = regressions.length;
-    printRegressions(regressions);
+    regressions = diffAgainstBaseline(results, await loadBaseline(opts.baseline));
   }
-
-  if (opts.junit) {
-    await writeJunit(opts.junit, results);
-    console.log(pc.dim(`\nJUnit report written to ${opts.junit}`));
-  }
-
   const gatesFailed = results.filter((r) => !r.gatePassed).length;
-  const total = results.reduce((s, r) => s + r.medianCostUsd, 0).toFixed(4);
-  console.log(
-    `\n${gatesFailed === 0 ? pc.green("All gates passed") : pc.red(`${gatesFailed} gate(s) failed`)}` +
-      pc.dim(`  ~$${total} total median cost`),
-  );
+
+  if (opts.json) {
+    process.stdout.write(JSON.stringify(resultsToJson(results, regressions), null, 2) + "\n");
+  } else {
+    console.log();
+    printConsole(results);
+    if (opts.baseline) printRegressions(regressions);
+    const total = results.reduce((s, r) => s + r.medianCostUsd, 0).toFixed(4);
+    console.log(
+      `\n${gatesFailed === 0 ? pc.green("All gates passed") : pc.red(`${gatesFailed} gate(s) failed`)}` +
+        pc.dim(`  ~$${total} total median cost`),
+    );
+  }
+
+  if (opts.junit) await writeJunit(opts.junit, results);
+  if (opts.markdown) {
+    await appendFile(path.resolve(opts.markdown), markdownSummary(results, regressions) + "\n");
+  }
 
   await track(telemetry, {
     version: VERSION,
     event: "run",
-    props: { scenarios: results.length, gates_failed: gatesFailed, regressions: regressionCount },
+    props: { scenarios: results.length, gates_failed: gatesFailed, regressions: regressions.length },
   });
 
-  const failed = gatesFailed > 0 || (opts.failOnRegression && regressionCount > 0);
+  const failed = gatesFailed > 0 || (opts.failOnRegression && regressions.length > 0);
   process.exit(failed ? 1 : 0);
 }
 

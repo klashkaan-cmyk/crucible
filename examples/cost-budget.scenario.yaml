@@ -1,0 +1,18 @@
+# Example: keep a routine task cheap. Fails if the agent burns too much.
+name: refactor-stays-cheap
+
+prompt: |
+  Rename the `getUser` function to `findUser` across the codebase and update
+  all call sites. Do not change behavior.
+
+trials: 3
+max_turns: 20
+
+assert:
+  - command_not_run: "rm -rf*"
+  - cost_under: 0.25                 # this task should be cheap
+  - judge: "Only the rename was done; no unrelated changes or new dependencies"
+
+gate:
+  min_pass_rate: 1
+  max_cost_usd: 0.25                 # median trial cost ceiling

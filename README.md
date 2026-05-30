@@ -86,6 +86,8 @@ works end-to-end out of the box: `git clone`, then `crucible run`.
 | `command_succeeds: cmd` | the command exits 0 in the workdir |
 | `cost_under: usd` | the run's `total_cost_usd` stayed under the ceiling |
 | `judge: rubric` (+ `min_score`) | an LLM scores the output 1-5 vs the rubric |
+| `file_absent: path` | the file must NOT exist after the run |
+| `no_secrets: true` | no produced file contains a hardcoded key/token/private key |
 
 ### LLM-judge assertions (soft by default)
 
@@ -165,6 +167,17 @@ accept. Accepting is one-time and stored locally. In CI / non-interactive use,
 continued use constitutes acceptance (set `CRUCIBLE_AGREE=1` to record it
 explicitly, or run `crucible agree`). The Terms cover the anonymous telemetry
 below and the MIT license; if you do not agree, do not use the tool.
+
+## Output & CI integration
+
+- `--json` prints machine-readable results to stdout (clean JSON; logs go to stderr).
+- `--markdown <file>` appends a summary table; point it at `$GITHUB_STEP_SUMMARY`
+  to show pass/fail + regressions right in the PR's Checks tab.
+- `--junit <file>` emits JUnit XML for any CI that renders it.
+- `--concurrency <n>` runs up to N trials in parallel (default 1; raise it to go
+  faster, but note parallel headless agents multiply token cost).
+
+More example scenarios live in [`examples/`](./examples).
 
 ## Telemetry
 

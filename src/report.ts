@@ -75,3 +75,56 @@ export function printRegressions(regressions: ReadonlyArray<Regression>): void {
     console.log(`  ${pc.red(r.kind)} ${pc.bold(r.name)}: ${r.detail}`);
   }
 }
+
+export interface ResultsJson {
+  gatesFailed: number;
+  totalMedianCostUsd: number;
+  scenarios: Array<{
+    name: string;
+    passRate: number;
+    stable: boolean;
+    medianCostUsd: number;
+    gatePassed: boolean;
+    gateReason: string;
+  }>;
+  regressions: Array<{ name: string; kind: string; detail: string }>;
+}
+
+export function resultsToJson(
+  results: ReadonlyArray<ScenarioResult>,
+  regressions: ReadonlyArray<Regression> = [],
+): ResultsJson {
+  return {
+    gatesFailed: results.filter((r) => !r.gatePassed).length,
+    totalMedianCostUsd: Number(results.reduce((s, r) => s + r.medianCostUsd, 0).toFixed(6)),
+    scenarios: results.map((r) => ({
+      name: r.name,
+      passRate: r.passRate,
+      stable: r.stable,
+      medianCostUsd: r.medianCostUsd,
+      gatePassed: r.gatePassed,
+      gateReason: r.gateReason,
+    })),
+    regressions: regressions.map((r) => ({ name: r.name, kind: r.kind, detail: r.detail })),
+  };
+}
+
+export function markdownSummary(
+  results: ReadonlyArray<ScenarioResult>,
+  regressions: ReadonlyArray<Regression> = [],
+): string {
+  const failed = results.filter((r) => !r.gatePassed).length;
+  const head = failed === 0 ? "All gates passed" : `${failed} gate(s) failed`;
+  const rows = results
+    .map(
+      (r) =>
+        `| ${r.gatePassed ? "PASS" : "FAIL"} | ${r.name} | ${(r.passRate * 100).toFixed(0)}% | ${r.stable ? "stable" : "flaky"} | $${r.medianCostUsd.toFixed(4)} |`,
+    )
+    .join("\n");
+  let md = `### Crucible — ${head}\n\n| | Scenario | Pass rate | Stability | Median cost |\n|--|--|--|--|--|\n${rows}\n`;
+  if (regressions.length) {
+    md += `\n**${regressions.length} regression(s) vs baseline:**\n` +
+      regressions.map((r) => `- \`${r.kind}\` ${r.name}: ${r.detail}`).join("\n") + "\n";
+  }
+  return md;
+}

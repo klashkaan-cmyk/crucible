@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0
+- `run --json` (machine-readable output) and `run --markdown <file>` (PR/Actions summary via `$GITHUB_STEP_SUMMARY`); the example GitHub Action now surfaces results in the Checks tab.
+- `run --concurrency <n>` runs trials in parallel.
+- New assertions: `file_absent` and `no_secrets` (scans produced files for keys/tokens/private keys).
+- Add `examples/` scenarios and a favicon asset.
+
 ## 0.1.6
 - Ship a runnable `express-api` fixture and point the example scenario at it, so a fresh clone runs end-to-end. Soften the `crucible init` template so first runs don't require a `security-reviewer` subagent.
 
