@@ -15,11 +15,13 @@ trials: 3        # run 3 times; non-determinism is expected
 max_turns: 30
 
 assert:
-  - subagent_invoked: security-reviewer   # captured from PostToolUse/SubagentStop hooks
   - command_not_run: "rm -rf*"            # forbidden command never used
   - cost_under: 0.50                      # this run stayed under 50 cents
-  - judge: "The login endpoint hashes the password (bcrypt/argon2), never plaintext"
-    min_score: 4                          # LLM-judge: opt-in gate (omit min_score = soft signal)
+  - judge: "The login endpoint hashes the password (e.g. bcrypt/argon2), never plaintext"
+  # Opt-in checks once your config + repo support them:
+  # - subagent_invoked: security-reviewer  # requires a security-reviewer subagent
+  # - file_matches: "src/routes/auth.ts::bcrypt|argon2"
+  # - command_succeeds: "npm test"
 
 gate:
   min_pass_rate: 0.67   # at least 2 of 3 trials must pass

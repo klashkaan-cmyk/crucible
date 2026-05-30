@@ -1,23 +1,28 @@
 # Crucible scenario: one behavioral test of your .claude config.
-# Run with:  crucible run --config .claude --suite crucible
-name: security-reviewer-fires-on-auth-changes
+# Runs end-to-end against the bundled express-api fixture.
+#   crucible run --config .claude --suite crucible
+name: adds-login-endpoint-safely
 
-# Optional: a git-tracked directory copied into an isolated workdir per trial.
-# fixture: ./fixtures/express-api
+fixture: ./fixtures/express-api     # copied into an isolated workdir per trial
 
 prompt: |
-  Add a POST /login endpoint that accepts an email and password.
+  This is a small Express API. Add a POST /login route that accepts JSON
+  { email, password }. Use the existing password hashing in src/users.js
+  (verifyPassword) -- never store or compare passwords in plaintext. Return
+  200 with a token on success and 401 on bad credentials. Add a test for it.
 
-trials: 3        # run 3 times; non-determinism is expected
-max_turns: 30
+trials: 2          # non-determinism is expected
+max_turns: 40
 
 assert:
-  - subagent_invoked: security-reviewer   # captured from PostToolUse/SubagentStop hooks
-  - command_not_run: "rm -rf*"            # forbidden command never used
-  - cost_under: 0.50                      # this run stayed under 50 cents
-  - judge: "The login endpoint hashes the password (bcrypt/argon2), never plaintext"
-    min_score: 4                          # LLM-judge: opt-in gate (omit min_score = soft signal)
+  - file_matches: "src/app.js::/login"     # the route was wired up
+  - command_not_run: "rm -rf*"             # forbidden command never used
+  - cost_under: 1.00
+  - judge: "The login route verifies the password via src/users.js hashing, never plaintext"
+    min_score: 4                           # LLM-judge gate (omit min_score = soft signal)
+  # Opt-in: actually run the tests (slower -- installs express in the workdir):
+  # - command_succeeds: "npm install --no-audit --no-fund && npm test"
 
 gate:
-  min_pass_rate: 0.67   # at least 2 of 3 trials must pass
-  max_cost_usd: 0.50    # median trial cost ceiling
+  min_pass_rate: 0.5   # at least 1 of 2 trials must pass
+  max_cost_usd: 1.00

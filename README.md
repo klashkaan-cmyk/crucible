@@ -45,26 +45,31 @@ crucible run --config .claude --suite crucible --junit results.xml
 ## A scenario
 
 ```yaml
-name: security-reviewer-fires-on-auth-changes
+name: adds-login-endpoint-safely
 
-fixture: ./fixtures/express-api      # optional git-tracked starting state
+fixture: ./fixtures/express-api      # copied into an isolated workdir per trial
 prompt: |
-  Add a POST /login endpoint that accepts an email and password.
+  Add a POST /login route that accepts JSON { email, password }. Use the
+  existing hashing in src/users.js (never plaintext); 200 on success, 401 on
+  bad credentials. Add a test.
 
-trials: 3                            # non-determinism is expected
-max_turns: 30
+trials: 2                            # non-determinism is expected
+max_turns: 40
 
 assert:
-  - subagent_invoked: security-reviewer
-  - file_matches: "src/routes/auth.ts::bcrypt|argon2"   # password is hashed
+  - file_matches: "src/app.js::/login"
   - command_not_run: "rm -rf*"
-  - command_succeeds: "npm test"
-  - cost_under: 0.50
+  - cost_under: 1.00
+  - judge: "Login verifies the password via src/users.js hashing, never plaintext"
+    min_score: 4                     # LLM-judge gate (omit min_score = soft signal)
 
 gate:
-  min_pass_rate: 0.67                # 2 of 3 trials must pass
-  max_cost_usd: 0.50
+  min_pass_rate: 0.5
+  max_cost_usd: 1.00
 ```
+
+A runnable `crucible/fixtures/express-api` ships with the repo, so this example
+works end-to-end out of the box: `git clone`, then `crucible run`.
 
 ### Assertion types (v0.1)
 

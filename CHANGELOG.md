@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.1.6
+- Ship a runnable `express-api` fixture and point the example scenario at it, so a fresh clone runs end-to-end. Soften the `crucible init` template so first runs don't require a `security-reviewer` subagent.
+
 ## 0.1.5
 - Add the transcript-diff viewer: `crucible run --save-transcripts <dir>` records each trial's ordered steps (tools/subagents + input summaries), and `crucible diff <a> <b> [--html <file>]` shows an LCS-aligned, color-coded step diff with turn/cost deltas and a standalone HTML side-by-side viewer.
 
