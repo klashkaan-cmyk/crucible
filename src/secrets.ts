@@ -16,6 +16,7 @@ export const SECRET_PATTERNS: ReadonlyArray<SecretPattern> = [
   { name: "anthropic-key", re: /sk-ant-[A-Za-z0-9-]{20,}/ },
   { name: "github-token", re: /gh[pousr]_[A-Za-z0-9]{20,}/ },
   { name: "slack-token", re: /xox[baprs]-[A-Za-z0-9-]{10,}/ },
+  { name: "stripe-key", re: /sk_(?:test|live)_[A-Za-z0-9]{16,}/ },
   { name: "generic-secret", re: /(?:api[_-]?key|secret|token|password)\s*[:=]\s*["'][^"']{8,}["']/i },
 ];
 

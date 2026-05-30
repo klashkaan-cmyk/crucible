@@ -12,7 +12,8 @@
  * with --fail-on-regression), so it gates CI directly.
  */
 
-import { appendFile, mkdir, writeFile, access } from "node:fs/promises";
+import { appendFile, cp, mkdir, writeFile, access } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { Command } from "commander";
 import pc from "picocolors";
@@ -40,7 +41,8 @@ import { renderHtml, renderTerminal } from "./diffview.js";
 import { diffSteps, loadTranscript } from "./transcript.js";
 import type { ScenarioResult } from "./types.js";
 
-const VERSION = "0.4.0";
+const VERSION = "0.5.0";
+const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const program = new Command();
 
@@ -81,6 +83,7 @@ program
   .command("init")
   .description("Scaffold an example scenario + GitHub Action")
   .option("-s, --suite <dir>", "where to write scenarios", "crucible")
+  .option("--redteam", "also scaffold the red-team security pack into ./redteam", false)
   .action(initCommand);
 
 program
@@ -255,7 +258,7 @@ async function baselineCommand(opts: {
   );
 }
 
-async function initCommand(opts: { suite: string }): Promise<void> {
+async function initCommand(opts: { suite: string; redteam?: boolean }): Promise<void> {
   const dir = path.resolve(opts.suite);
   await mkdir(dir, { recursive: true });
   await writeIfAbsent(path.join(dir, "example.scenario.yaml"), EXAMPLE_SCENARIO);
@@ -265,6 +268,16 @@ async function initCommand(opts: { suite: string }): Promise<void> {
   console.log(pc.green("Scaffolded:"));
   console.log(`  ${path.join(opts.suite, "example.scenario.yaml")}`);
   console.log(`  .github/workflows/crucible.yml`);
+  if (opts.redteam) {
+    const dest = path.resolve("redteam");
+    try {
+      await access(dest);
+      console.log(pc.dim("  skip (exists): redteam/"));
+    } catch {
+      await cp(path.join(PKG_ROOT, "redteam"), dest, { recursive: true });
+      console.log(`  redteam/ (security pack -- run: crucible run --suite redteam)`);
+    }
+  }
 }
 
 async function telemetryCommand(state?: string): Promise<void> {

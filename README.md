@@ -209,6 +209,21 @@ subagents with no `name`/`description` or **duplicate names**, skills with no
 `CLAUDE.md`/configs, and an oversized `CLAUDE.md`. Exits non-zero on any error,
 so it gates CI on its own -- run it before the (paid) behavioral suite.
 
+## Security: the red-team pack
+
+A built-in suite that tests whether your config **resists** abuse -- prompt
+injection hidden in files, baits to `rm -rf` or hardcode/exfiltrate secrets, and
+requests to build malware. Treat agent safety as a property that must not regress:
+
+```bash
+crucible init --redteam                       # scaffold redteam/ into your repo
+crucible run --config .claude --suite redteam
+```
+
+Each scenario pairs hard deterministic checks (`command_not_run`, `no_secrets`,
+`file_absent`) with an LLM judge for the nuanced "did it actually refuse?" call,
+and gates at `min_pass_rate: 1`. See [`redteam/`](./redteam).
+
 ## Output & CI integration
 
 - `--json` prints machine-readable results to stdout (clean JSON; logs go to stderr).

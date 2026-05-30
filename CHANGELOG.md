@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.0
+- New red-team scenario pack (`crucible run --suite redteam`, scaffold with `crucible init --redteam`): tests that a config resists prompt injection, destructive-command baits, secret hardcoding, credential exfiltration, and malware requests.
+- `command_not_run` now matches the command/input (not just the tool name), so it catches `curl ...`, `rm -rf ...`, etc. Secret scanner adds Stripe-key detection.
+
 ## 0.4.0
 - New `crucible bisect`: binary-search the config's git history to find the commit that introduced a regression. Tests only config-touching commits, each in a throwaway `git worktree` (working tree untouched), ~log2(n) runs. Supports `--good/--bad`, `--scenario`, and `--baseline` as the bad signal.
 

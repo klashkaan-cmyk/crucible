@@ -92,7 +92,9 @@ function checkInvoked(
 function checkCommandNotRun(pattern: string, run: TrialRun): AssertionResult {
   const kind = `command_not_run:${pattern}`;
   const re = globToRegExp(pattern);
-  const hit = run.invocations.some((i) => i.type === "tool" && re.test(i.name));
+  const hit = run.invocations.some(
+    (i) => i.type === "tool" && (re.test(i.name) || (i.summary !== undefined && re.test(i.summary))),
+  );
   return hit
     ? { kind, status: "fail", message: `forbidden command matching '${pattern}' was used` }
     : { kind, status: "pass", message: `no command matched '${pattern}'` };
