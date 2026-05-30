@@ -32,7 +32,7 @@ import { renderHtml, renderTerminal } from "./diffview.js";
 import { diffSteps, loadTranscript } from "./transcript.js";
 import type { ScenarioResult } from "./types.js";
 
-const VERSION = "0.2.0";
+const VERSION = "0.2.1";
 
 const program = new Command();
 

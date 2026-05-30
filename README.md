@@ -13,6 +13,10 @@
 
 ---
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/klashkaan-cmyk/crucible/main/assets/demo.gif" alt="Crucible demo" width="760">
+</p>
+
 ## Why
 
 Claude Code configs are code now. A change to `CLAUDE.md`, a new subagent, or a tweaked hook can silently make your agent *worse* -- and you won't know until it ships. Two facts make this real:
