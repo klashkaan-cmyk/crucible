@@ -14,6 +14,14 @@ const AssertionSpec = z
     file_exists: z.string().optional(),
     /** A file must exist AND match this regex. Use `path::pattern`. */
     file_matches: z.string().optional(),
+    /** The agent's final text output must contain this substring. */
+    response_contains: z.string().optional(),
+    /** The agent's final text output must match this regex. */
+    response_matches: z.string().optional(),
+    /** Wall-clock duration (ms) of the run must be at or below this ceiling. */
+    latency_under: z.number().positive().optional(),
+    /** Number of agent turns must be at or below this ceiling. */
+    turns_under: z.number().int().positive().optional(),
     /** A named subagent must have been invoked during the run. */
     subagent_invoked: z.string().optional(),
     /** A named tool must have been invoked during the run. */
@@ -38,6 +46,10 @@ const AssertionSpec = z
       [
         o.file_exists,
         o.file_matches,
+        o.response_contains,
+        o.response_matches,
+        o.latency_under,
+        o.turns_under,
         o.subagent_invoked,
         o.tool_invoked,
         o.command_not_run,

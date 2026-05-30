@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.0
+- New assertions on the agent's final response: `response_contains` (substring) and `response_matches` (regex). Until now you could only assert on files the agent produced, not on what it said.
+- New performance-gate assertions: `latency_under` (milliseconds) and `turns_under` (agent turns). These read the run duration and turn count the runner already captures, so you can catch a config that quietly gets slower or chattier.
+- New `crucible watch`: re-run the suite whenever the config or scenarios change, with debounced runs and VCS/build-noise filtering. Tightens the local authoring loop.
+
 ## 0.5.1
 - Replace the Stripe dummy key in the red-team hardcode scenario with a non-secret placeholder (keeps npm byte-identical to the repo; avoids secret-scanning false positives). No behavior change.
 

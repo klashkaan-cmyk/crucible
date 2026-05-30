@@ -13,6 +13,7 @@
  */
 
 import { appendFile, cp, mkdir, writeFile, access } from "node:fs/promises";
+import { watch as fsWatch } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { Command } from "commander";
@@ -39,9 +40,10 @@ import { EXAMPLE_SCENARIO, EXAMPLE_WORKFLOW } from "./templates.js";
 import { configPath, isEnabled, loadConfig, maybeShowNotice, setEnabled, track } from "./telemetry.js";
 import { renderHtml, renderTerminal } from "./diffview.js";
 import { diffSteps, loadTranscript } from "./transcript.js";
+import { debounce, dedupeRoots, isRelevantChange } from "./watch.js";
 import type { ScenarioResult } from "./types.js";
 
-const VERSION = "0.5.1";
+const VERSION = "0.6.0";
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const program = new Command();
@@ -67,6 +69,17 @@ program
   .option("--save-transcripts <dir>", "save each trial transcript for later `crucible diff`")
   .option("--keep-workdirs", "do not delete trial working copies (debugging)", false)
   .action(runCommand);
+
+program
+  .command("watch")
+  .description("Re-run the suite whenever the config or scenarios change")
+  .option("-c, --config <dir>", "config dir under test (CLAUDE_CONFIG_DIR)", ".claude")
+  .option("-s, --suite <dir>", "directory of *.scenario.yaml files", "crucible")
+  .option("--concurrency <n>", "run up to N trials in parallel (default 1)")
+  .option("--claude-bin <path>", "path to the claude binary", "claude")
+  .option("--judge-model <model>", "model for LLM-judge assertions (default: CC default)")
+  .option("--debounce <ms>", "wait this long after the last change before re-running", "300")
+  .action(watchCommand);
 
 program
   .command("baseline")
@@ -228,6 +241,81 @@ async function runCommand(opts: {
 
   const failed = gatesFailed > 0 || (opts.failOnRegression && regressions.length > 0);
   process.exit(failed ? 1 : 0);
+}
+
+async function watchCommand(opts: {
+  config: string;
+  suite: string;
+  concurrency?: string;
+  claudeBin: string;
+  judgeModel?: string;
+  debounce: string;
+}): Promise<void> {
+  const telemetry = await ensureConsent();
+  await maybeShowNotice(telemetry);
+
+  await requireScenarios(opts.suite);
+  const suiteOpts = {
+    ...suiteOptions({ ...opts, keepWorkdirs: false }),
+    scenarioDir: path.resolve(opts.suite),
+  };
+  const roots = dedupeRoots([suiteOpts.configDir, suiteOpts.scenarioDir]);
+  const delayMs = Math.max(0, parseInt(opts.debounce, 10) || 300);
+
+  let running = false;
+  let rerunQueued = false;
+
+  async function runOnce(): Promise<void> {
+    if (running) {
+      rerunQueued = true;
+      return;
+    }
+    running = true;
+    try {
+      const scenarios = await requireScenarios(opts.suite);
+      console.log(pc.dim(`\n--- run (${scenarios.length} scenario(s)) ---`));
+      const results = await runSuite(scenarios, suiteOpts);
+      printConsole(results);
+      const gatesFailed = results.filter((r) => !r.gatePassed).length;
+      console.log(
+        gatesFailed === 0
+          ? pc.green("All gates passed")
+          : pc.red(`${gatesFailed} gate(s) failed`),
+      );
+    } catch (err) {
+      console.error(pc.red(`run failed: ${(err as Error).message}`));
+    } finally {
+      running = false;
+      if (rerunQueued) {
+        rerunQueued = false;
+        void runOnce();
+      }
+    }
+  }
+
+  const trigger = debounce(() => void runOnce(), delayMs);
+
+  console.log(pc.cyan("crucible watch") + pc.dim(`  config: ${suiteOpts.configDir}`));
+  for (const root of roots) console.log(pc.dim(`  watching ${root}`));
+  console.log(pc.dim("Press Ctrl-C to stop.\n"));
+
+  const watchers = roots.map((root) =>
+    fsWatch(root, { recursive: true }, (_event, filename) => {
+      if (filename && isRelevantChange(filename.toString())) trigger();
+    }),
+  );
+
+  const shutdown = (): void => {
+    trigger.cancel();
+    for (const w of watchers) w.close();
+    console.log(pc.dim("\nStopped watching."));
+    process.exit(0);
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+
+  await runOnce();
+  await new Promise<void>(() => {});
 }
 
 async function baselineCommand(opts: {

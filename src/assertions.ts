@@ -36,6 +36,10 @@ async function evaluateOne(
 ): Promise<AssertionResult> {
   if (spec.file_exists !== undefined) return checkFileExists(spec.file_exists, run.workdir);
   if (spec.file_matches !== undefined) return checkFileMatches(spec.file_matches, run.workdir);
+  if (spec.response_contains !== undefined) return checkResponseContains(spec.response_contains, run);
+  if (spec.response_matches !== undefined) return checkResponseMatches(spec.response_matches, run);
+  if (spec.latency_under !== undefined) return checkLatencyUnder(spec.latency_under, run);
+  if (spec.turns_under !== undefined) return checkTurnsUnder(spec.turns_under, run);
   if (spec.subagent_invoked !== undefined) return checkInvoked("subagent", spec.subagent_invoked, run);
   if (spec.tool_invoked !== undefined) return checkInvoked("tool", spec.tool_invoked, run);
   if (spec.command_not_run !== undefined) return checkCommandNotRun(spec.command_not_run, run);
@@ -74,6 +78,42 @@ async function checkFileMatches(spec: string, workdir: string): Promise<Assertio
   } catch {
     return { kind, status: "fail", message: `${rel} unreadable` };
   }
+}
+
+function checkResponseContains(needle: string, run: TrialRun): AssertionResult {
+  const kind = `response_contains:${needle.slice(0, 40)}`;
+  return run.headless.result.includes(needle)
+    ? { kind, status: "pass", message: `response contains '${needle}'` }
+    : { kind, status: "fail", message: `response does not contain '${needle}'` };
+}
+
+function checkResponseMatches(pattern: string, run: TrialRun): AssertionResult {
+  const kind = `response_matches:${pattern.slice(0, 40)}`;
+  let re: RegExp;
+  try {
+    re = new RegExp(pattern);
+  } catch (err) {
+    return { kind, status: "error", message: `invalid regex: ${(err as Error).message.slice(0, 80)}` };
+  }
+  return re.test(run.headless.result)
+    ? { kind, status: "pass", message: `response matches /${pattern}/` }
+    : { kind, status: "fail", message: `response does not match /${pattern}/` };
+}
+
+function checkLatencyUnder(ceilingMs: number, run: TrialRun): AssertionResult {
+  const kind = `latency_under:${ceilingMs}`;
+  const ms = run.headless.durationMs;
+  return ms <= ceilingMs
+    ? { kind, status: "pass", message: `${ms}ms <= ${ceilingMs}ms` }
+    : { kind, status: "fail", message: `${ms}ms > ${ceilingMs}ms` };
+}
+
+function checkTurnsUnder(ceiling: number, run: TrialRun): AssertionResult {
+  const kind = `turns_under:${ceiling}`;
+  const turns = run.headless.numTurns;
+  return turns <= ceiling
+    ? { kind, status: "pass", message: `${turns} turns <= ${ceiling}` }
+    : { kind, status: "fail", message: `${turns} turns > ${ceiling}` };
 }
 
 function checkInvoked(

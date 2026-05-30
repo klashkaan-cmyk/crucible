@@ -84,6 +84,10 @@ works end-to-end out of the box: `git clone`, then `crucible run`.
 |-----------|-------------|
 | `file_exists: path` | the file was created in the workdir |
 | `file_matches: path::regex` | the file exists and matches the regex |
+| `response_contains: text` | the agent's final message contains this substring |
+| `response_matches: regex` | the agent's final message matches this regex |
+| `latency_under: ms` | the run finished within this many milliseconds |
+| `turns_under: n` | the run used at most `n` agent turns |
 | `subagent_invoked: name` | that subagent fired during the run |
 | `tool_invoked: name` | that tool fired during the run |
 | `command_not_run: glob` | no tool invocation matched the glob |
@@ -139,6 +143,19 @@ crucible diff .crucible/good/login.trial0.json .crucible/new/login.trial0.json -
 The terminal shows an aligned, color-coded step diff (tools + subagents, with
 their inputs) plus turn/cost deltas; `--html` writes a standalone, dependency-free
 viewer with the two runs side by side and both final messages in full.
+
+## Watch mode
+
+While authoring a config or scenarios, re-run the suite automatically on every
+change:
+
+```bash
+crucible watch --config .claude --suite crucible
+```
+
+It watches both the config dir and the scenario dir, debounces a burst of edits
+into a single run, and prints the gate summary after each pass. VCS and build
+noise (`.git`, `node_modules`, `dist`) is ignored. Ctrl-C to stop.
 
 ## CI
 
