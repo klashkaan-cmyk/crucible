@@ -1,4 +1,7 @@
-# Crucible
+<p align="center">
+  <img src="assets/logo.svg" alt="Crucible" width="340">
+</p>
+
 
 **Regression CI for Claude Code configs.** Treat your `.claude/` directory -- skills, subagents, hooks, and `CLAUDE.md` -- as code under test. Define behavioral scenarios, run them N times on every change, and gate merges when quality regresses.
 
