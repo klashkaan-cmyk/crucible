@@ -172,6 +172,20 @@ continued use constitutes acceptance (set `CRUCIBLE_AGREE=1` to record it
 explicitly, or run `crucible agree`). The Terms cover the anonymous telemetry
 below and the MIT license; if you do not agree, do not use the tool.
 
+## Lint your config (instant, no model calls)
+
+Catch config mistakes statically -- free, offline, no API key needed:
+
+```bash
+crucible lint --config .claude        # add --json for machine-readable output
+```
+
+It flags: invalid `settings.json`, hooks pointing at scripts that don't exist,
+subagents with no `name`/`description` or **duplicate names**, skills with no
+`description` (which silently never auto-activate), hardcoded secrets in
+`CLAUDE.md`/configs, and an oversized `CLAUDE.md`. Exits non-zero on any error,
+so it gates CI on its own -- run it before the (paid) behavioral suite.
+
 ## Output & CI integration
 
 - `--json` prints machine-readable results to stdout (clean JSON; logs go to stderr).

@@ -10,6 +10,7 @@ import { access, readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { runJudge } from "./judge.js";
+import { findSecret } from "./secrets.js";
 import type { AssertionSpecT } from "./scenario.js";
 import type { AssertionResult, TrialRun } from "./types.js";
 
@@ -159,14 +160,6 @@ async function checkFileAbsent(rel: string, workdir: string): Promise<AssertionR
   }
 }
 
-const SECRET_PATTERNS: ReadonlyArray<{ name: string; re: RegExp }> = [
-  { name: "aws-access-key", re: /AKIA[0-9A-Z]{16}/ },
-  { name: "private-key", re: /-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/ },
-  { name: "openai-key", re: /sk-[A-Za-z0-9]{20,}/ },
-  { name: "github-token", re: /gh[pousr]_[A-Za-z0-9]{20,}/ },
-  { name: "generic-secret", re: /(?:api[_-]?key|secret|token|password)\s*[:=]\s*["'][^"']{8,}["']/i },
-];
-
 const SECRET_SKIP_DIRS = new Set(["node_modules", ".git", ".crucible"]);
 const SECRET_MAX_FILE = 200_000;
 
@@ -202,9 +195,8 @@ async function scanForSecret(
       const buf = await readFile(full);
       if (buf.includes(0)) continue;
       const content = buf.toString("utf8");
-      for (const { name, re } of SECRET_PATTERNS) {
-        if (re.test(content)) return { name, rel: path.relative(root, full) };
-      }
+      const found = findSecret(content);
+      if (found) return { name: found.name, rel: path.relative(root, full) };
     } catch {
       // unreadable -> skip
     }

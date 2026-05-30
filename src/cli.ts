@@ -26,13 +26,14 @@ import {
 import { acceptTerms, ConsentDeclined, ensureConsent, TERMS_SUMMARY } from "./consent.js";
 import { markdownSummary, printConsole, printRegressions, resultsToJson, writeJunit } from "./report.js";
 import { configFingerprint, discoverScenarios, runSuite, type SuiteOptions } from "./suite.js";
+import { countByLevel, lintConfig } from "./lint.js";
 import { EXAMPLE_SCENARIO, EXAMPLE_WORKFLOW } from "./templates.js";
 import { configPath, isEnabled, loadConfig, maybeShowNotice, setEnabled, track } from "./telemetry.js";
 import { renderHtml, renderTerminal } from "./diffview.js";
 import { diffSteps, loadTranscript } from "./transcript.js";
 import type { ScenarioResult } from "./types.js";
 
-const VERSION = "0.2.1";
+const VERSION = "0.3.0";
 
 const program = new Command();
 
@@ -98,6 +99,13 @@ program
   .description("Diff two saved transcripts step-by-step; --html for a viewer")
   .option("--html <file>", "write a standalone HTML diff viewer")
   .action(diffCommand);
+
+program
+  .command("lint")
+  .description("Static checks on a .claude config (no model calls, no cost)")
+  .option("-c, --config <dir>", "config dir to lint", ".claude")
+  .option("--json", "output findings as JSON", false)
+  .action(lintCommand);
 
 program.parseAsync(process.argv);
 
@@ -271,6 +279,26 @@ async function diffCommand(
     await writeFile(path.resolve(opts.html), renderHtml(a, b, rows));
     console.log(pc.dim(`\nHTML diff written to ${opts.html}`));
   }
+}
+
+async function lintCommand(opts: { config: string; json?: boolean }): Promise<void> {
+  const dir = path.resolve(opts.config);
+  const findings = await lintConfig(dir);
+  const counts = countByLevel(findings);
+
+  if (opts.json) {
+    process.stdout.write(JSON.stringify({ counts, findings }, null, 2) + "\n");
+  } else if (findings.length === 0) {
+    console.log(pc.green(`No issues found in ${dir}`));
+  } else {
+    for (const f of findings) {
+      const tag =
+        f.level === "error" ? pc.red("error") : f.level === "warn" ? pc.yellow("warn") : pc.dim("info");
+      console.log(`${tag} ${pc.dim(f.rule)}  ${path.relative(process.cwd(), f.file)}\n    ${f.message}`);
+    }
+    console.log(`\n${pc.red(`${counts.error} error(s)`)}, ${pc.yellow(`${counts.warn} warning(s)`)}`);
+  }
+  process.exit(counts.error > 0 ? 1 : 0);
 }
 
 async function writeIfAbsent(file: string, content: string): Promise<void> {

@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.3.0
+- New `crucible lint` command: deterministic, offline static checks on a `.claude` config (invalid settings JSON, hooks referencing missing scripts, subagents missing/duplicate names or descriptions, skills with no description that won't auto-activate, hardcoded secrets in CLAUDE.md/configs, oversized CLAUDE.md). No model calls, no cost; exits non-zero on errors. Secret patterns factored into a shared module.
+
 ## 0.2.0
 - `run --json` (machine-readable output) and `run --markdown <file>` (PR/Actions summary via `$GITHUB_STEP_SUMMARY`); the example GitHub Action now surfaces results in the Checks tab.
 - `run --concurrency <n>` runs trials in parallel.
