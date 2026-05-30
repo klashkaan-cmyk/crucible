@@ -178,8 +178,18 @@ below and the MIT license; if you do not agree, do not use the tool.
 - `--markdown <file>` appends a summary table; point it at `$GITHUB_STEP_SUMMARY`
   to show pass/fail + regressions right in the PR's Checks tab.
 - `--junit <file>` emits JUnit XML for any CI that renders it.
-- `--concurrency <n>` runs up to N trials in parallel (default 1; raise it to go
-  faster, but note parallel headless agents multiply token cost).
+- `--concurrency <n>` runs up to N trials in parallel (default `1`). Trials are
+  independent, so this cuts wall-clock time roughly N-fold:
+
+  ```bash
+  # a 5-trial scenario, ~5x faster
+  crucible run --suite crucible --concurrency 5
+  ```
+
+  Trade-off: parallel headless agents run concurrently, so peak token spend (and
+  rate-limit pressure) scales with N. Keep it at `1` in cost-sensitive CI; raise
+  it locally when iterating. It parallelizes across the whole suite, not just one
+  scenario.
 
 More example scenarios live in [`examples/`](./examples).
 

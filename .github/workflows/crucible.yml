@@ -21,6 +21,7 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: crucible run --config .claude --suite crucible --junit crucible-results.xml --markdown "$GITHUB_STEP_SUMMARY"
+        # Tip: add --concurrency 4 to run trials in parallel (raises peak token cost)
       - name: Publish results
         if: always()
         uses: actions/upload-artifact@v4
