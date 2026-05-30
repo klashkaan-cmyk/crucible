@@ -41,7 +41,7 @@ import { renderHtml, renderTerminal } from "./diffview.js";
 import { diffSteps, loadTranscript } from "./transcript.js";
 import type { ScenarioResult } from "./types.js";
 
-const VERSION = "0.5.0";
+const VERSION = "0.5.1";
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const program = new Command();
