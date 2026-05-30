@@ -1,0 +1,52 @@
+{
+  "name": "crucible-ci",
+  "version": "0.1.0",
+  "description": "Regression CI for Claude Code configs. Treat your .claude/ (skills, subagents, hooks, CLAUDE.md) as code under test.",
+  "type": "module",
+  "bin": {
+    "crucible": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup src/cli.ts --format esm --clean --dts",
+    "dev": "tsx src/cli.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "agent",
+    "eval",
+    "regression",
+    "ci",
+    "testing",
+    "subagents",
+    "skills",
+    "hooks"
+  ],
+  "author": "Khalid Vance <klashkaan@gmail.com>",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "picocolors": "^1.1.1",
+    "yaml": "^2.6.1",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsup": "^8.3.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

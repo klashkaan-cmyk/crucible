@@ -1,0 +1,21 @@
+# Crucible scenario: one behavioral test of your .claude config.
+# Run with:  crucible run --config .claude --suite crucible
+name: security-reviewer-fires-on-auth-changes
+
+# Optional: a git-tracked directory copied into an isolated workdir per trial.
+# fixture: ./fixtures/express-api
+
+prompt: |
+  Add a POST /login endpoint that accepts an email and password.
+
+trials: 3        # run 3 times; non-determinism is expected
+max_turns: 30
+
+assert:
+  - subagent_invoked: security-reviewer   # captured from PostToolUse/SubagentStop hooks
+  - command_not_run: "rm -rf*"            # forbidden command never used
+  - cost_under: 0.50                      # this run stayed under 50 cents
+
+gate:
+  min_pass_rate: 0.67   # at least 2 of 3 trials must pass
+  max_cost_usd: 0.50    # median trial cost ceiling
