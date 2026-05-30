@@ -21,7 +21,9 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",
-    "postinstall": "node scripts/postinstall.mjs"
+    "postinstall": "node scripts/postinstall.mjs",
+    "prepublishOnly": "npm run build && node dist/cli.js --version >/dev/null && node dist/cli.js --help >/dev/null",
+    "smoke": "node dist/cli.js --version && node dist/cli.js --help >/dev/null"
   },
   "keywords": [
     "claude",
