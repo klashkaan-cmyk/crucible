@@ -172,6 +172,23 @@ A neutral, tool-free model reads what the agent actually did (steps, final
 message, cost/turns) and prints a `CAUSE:` / `FIX:` diagnosis -- one concrete
 config change to try. `--scenario` adds the prompt intent for a sharper read.
 
+## Record / replay (free, deterministic CI)
+
+Real `claude` runs cost tokens and flake -- the core objection to LLM-config CI.
+Record a run once, replay it forever:
+
+```bash
+crucible run --suite crucible --record .crucible/cassettes   # one real run, recorded
+crucible run --suite crucible --replay .crucible/cassettes   # no claude calls at all
+```
+
+A cassette captures the run envelope, the tool/subagent invocations, and a
+snapshot of the files the agent produced. On `--replay`, Crucible materializes
+those files into a fresh workdir and evaluates assertions against them with no
+network and no tokens -- so CI is instant and deterministic. Re-record only when
+you intentionally change the config. Every deterministic assertion replays
+offline; only `judge` (inherently a model call) still reaches the network.
+
 ## Watch mode
 
 While authoring a config or scenarios, re-run the suite automatically on every

@@ -48,7 +48,7 @@ import { explain } from "./explain.js";
 import { loadScenario } from "./scenario.js";
 import type { ScenarioResult } from "./types.js";
 
-const VERSION = "0.9.0";
+const VERSION = "0.10.0";
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const program = new Command();
@@ -75,6 +75,8 @@ program
   .option("--keep-workdirs", "do not delete trial working copies (debugging)", false)
   .option("--badge <file>", "write a shields.io endpoint JSON badge to this path")
   .option("--pr-comment", "post/update a sticky results comment on the PR (CI)", false)
+  .option("--record <dir>", "record each real run as a replayable cassette in this dir")
+  .option("--replay <dir>", "replay runs from cassettes in this dir (no claude calls)")
   .action(runCommand);
 
 program
@@ -175,6 +177,8 @@ function suiteOptions(opts: {
   saveTranscripts?: string;
   concurrency?: string;
   keepWorkdirs?: boolean;
+  record?: string;
+  replay?: string;
 }): SuiteOptions {
   const concurrency = opts.concurrency ? Math.max(1, parseInt(opts.concurrency, 10) || 1) : 1;
   return {
@@ -185,6 +189,8 @@ function suiteOptions(opts: {
     concurrency,
     ...(opts.judgeModel ? { judgeModel: opts.judgeModel } : {}),
     ...(opts.saveTranscripts ? { saveTranscriptsDir: path.resolve(opts.saveTranscripts) } : {}),
+    ...(opts.record ? { recordDir: path.resolve(opts.record) } : {}),
+    ...(opts.replay ? { replayDir: path.resolve(opts.replay) } : {}),
   };
 }
 
@@ -214,6 +220,8 @@ async function runCommand(opts: {
   keepWorkdirs: boolean;
   badge?: string;
   prComment?: boolean;
+  record?: string;
+  replay?: string;
 }): Promise<void> {
   let telemetry;
   try {
@@ -228,9 +236,15 @@ async function runCommand(opts: {
   }
   await maybeShowNotice(telemetry);
 
+  if (opts.record && opts.replay) {
+    console.error(pc.red("--record and --replay are mutually exclusive."));
+    process.exit(2);
+  }
+
   const files = await requireScenarios(opts.suite);
   const suiteOpts = { ...suiteOptions(opts), scenarioDir: path.resolve(opts.suite) };
-  console.error(pc.dim(`config: ${suiteOpts.configDir}  scenarios: ${files.length}\n`));
+  const mode = opts.replay ? pc.cyan(" [replay]") : opts.record ? pc.cyan(" [record]") : "";
+  console.error(pc.dim(`config: ${suiteOpts.configDir}  scenarios: ${files.length}${mode}\n`));
 
   const results = await runSuite(files, suiteOpts);
 

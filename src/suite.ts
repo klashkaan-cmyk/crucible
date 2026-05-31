@@ -7,7 +7,8 @@
  */
 
 import { execFile } from "node:child_process";
-import { readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import path from "node:path";
 
@@ -17,6 +18,14 @@ import { loadScenario, type Scenario } from "./scenario.js";
 import { runTrial } from "./runner.js";
 import { aggregate } from "./stats.js";
 import { fromRun, saveTranscript } from "./transcript.js";
+import {
+  cassetteName,
+  cleanupWorkdir,
+  loadCassette,
+  recordCassette,
+  replayCassette,
+  saveCassette,
+} from "./cassette.js";
 import type { ScenarioResult, TrialResult } from "./types.js";
 
 export interface SuiteOptions {
@@ -27,6 +36,10 @@ export interface SuiteOptions {
   readonly scenarioDir: string;
   readonly claudeBin?: string;
   readonly keepWorkdirs?: boolean;
+  /** When set, record each real run as a cassette into this dir. */
+  readonly recordDir?: string;
+  /** When set, replay runs from cassettes in this dir instead of calling claude. */
+  readonly replayDir?: string;
 }
 
 export async function runScenarioFile(
@@ -52,13 +65,25 @@ async function runOneTrial(
   opts: SuiteOptions,
 ): Promise<TrialResult> {
   try {
-    const run = await runTrial({
-      configDir: opts.configDir,
-      fixtureDir,
-      prompt: scenario.prompt,
-      maxTurns: scenario.max_turns,
-      claudeBin: opts.claudeBin,
-    });
+    let run;
+    let replayWorkdir: string | undefined;
+    if (opts.replayDir) {
+      const file = path.join(opts.replayDir, cassetteName(scenario.name, index));
+      const cassette = await loadCassette(file);
+      replayWorkdir = await mkdtemp(path.join(tmpdir(), "crucible-replay-"));
+      run = await replayCassette(cassette, replayWorkdir);
+    } else {
+      run = await runTrial({
+        configDir: opts.configDir,
+        fixtureDir,
+        prompt: scenario.prompt,
+        maxTurns: scenario.max_turns,
+        claudeBin: opts.claudeBin,
+      });
+      if (opts.recordDir) {
+        await saveCassette(opts.recordDir, await recordCassette(scenario.name, index, run));
+      }
+    }
     const assertions = await evaluateAssertions(scenario.assert, run, {
       claudeBin: opts.claudeBin,
       judgeModel: opts.judgeModel,
@@ -67,7 +92,11 @@ async function runOneTrial(
     if (opts.saveTranscriptsDir) {
       await saveTranscript(opts.saveTranscriptsDir, fromRun(scenario.name, index, run));
     }
-    if (!opts.keepWorkdirs) await rm(run.workdir, { recursive: true, force: true });
+    if (replayWorkdir) {
+      await cleanupWorkdir(replayWorkdir);
+    } else if (!opts.keepWorkdirs) {
+      await rm(run.workdir, { recursive: true, force: true });
+    }
     return {
       index,
       assertions,

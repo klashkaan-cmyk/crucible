@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.10.0
+- New record / replay cassettes -- the VCR pattern for agent runs. `crucible run --record <dir>` saves each real run (headless envelope, tool/subagent invocations, and a snapshot of the files the agent produced) as a cassette. `crucible run --replay <dir>` then re-runs the suite from those cassettes WITHOUT calling `claude` at all: free, instant, deterministic, flake-free CI. Re-record only when you intentionally change the config. All deterministic assertions (response_*, latency/turns/cost, *_invoked, command_not_run/succeeds, file_*, no_secrets) replay fully offline against the materialized workdir; only `judge` (inherently a model call) still reaches the network. `--record` and `--replay` are mutually exclusive.
+
 ## 0.9.0
 - New `crucible explain <transcript>`: turns a red run into an actionable diagnosis. A neutral, tool-free model reads a saved transcript (from `run --save-transcripts`) and prints the likely CAUSE plus one concrete FIX to the `.claude` config. Pass `--scenario <file>` to add the prompt intent. Prompt construction is pure/unit-tested; the model call reuses the judge's `runHeadlessText` path.
 
