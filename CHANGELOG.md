@@ -1,22 +1,23 @@
 # Changelog
 
-## 0.10.0
-- New record / replay cassettes -- the VCR pattern for agent runs. `crucible run --record <dir>` saves each real run (headless envelope, tool/subagent invocations, and a snapshot of the files the agent produced) as a cassette. `crucible run --replay <dir>` then re-runs the suite from those cassettes WITHOUT calling `claude` at all: free, instant, deterministic, flake-free CI. Re-record only when you intentionally change the config. All deterministic assertions (response_*, latency/turns/cost, *_invoked, command_not_run/succeeds, file_*, no_secrets) replay fully offline against the materialized workdir; only `judge` (inherently a model call) still reaches the network. `--record` and `--replay` are mutually exclusive.
-
-## 0.9.0
-- New `crucible explain <transcript>`: turns a red run into an actionable diagnosis. A neutral, tool-free model reads a saved transcript (from `run --save-transcripts`) and prints the likely CAUSE plus one concrete FIX to the `.claude` config. Pass `--scenario <file>` to add the prompt intent. Prompt construction is pure/unit-tested; the model call reuses the judge's `runHeadlessText` path.
-
-## 0.8.0
-- New `crucible generate`: reads an existing `.claude` config (subagents, skills, CLAUDE.md) and scaffolds a starter scenario suite -- one `subagent_invoked` scenario per subagent, a smoke scenario per skill, and a CLAUDE.md judge smoke test. Goes from zero to a runnable suite in one command; `--force` overwrites, otherwise existing files are skipped. Every generated scenario validates against the loader.
-
-## 0.7.0
-- `crucible run --badge <file>` writes a [shields.io endpoint](https://shields.io/badges/endpoint-badge) JSON badge (`crucible | N/N passing`, green/red) you can point a shields URL at for a live README badge.
-- `crucible run --pr-comment` posts a results table to the pull request and updates the SAME comment on every later run (sticky, identified by a hidden marker) instead of spamming new comments. Reads the GitHub Actions environment (`GITHUB_TOKEN`, `GITHUB_REPOSITORY`, PR event) and skips with a warning when run outside that context.
-
 ## 0.6.0
-- New assertions on the agent's final response: `response_contains` (substring) and `response_matches` (regex). Until now you could only assert on files the agent produced, not on what it said.
-- New performance-gate assertions: `latency_under` (milliseconds) and `turns_under` (agent turns). These read the run duration and turn count the runner already captures, so you can catch a config that quietly gets slower or chattier.
-- New `crucible watch`: re-run the suite whenever the config or scenarios change, with debounced runs and VCS/build-noise filtering. Tightens the local authoring loop.
+A big feature release: deeper assertions, faster local iteration, zero-setup scenario authoring, failure diagnosis, results surfaced in CI, and -- the headline -- free, deterministic CI via record/replay.
+
+### Record / replay cassettes (free, deterministic CI)
+- `crucible run --record <dir>` saves each real run (headless envelope, tool/subagent invocations, and a snapshot of the files the agent produced) as a cassette. `crucible run --replay <dir>` re-runs the suite from those cassettes WITHOUT calling `claude` at all: free, instant, deterministic, flake-free CI. Re-record only when you intentionally change the config. All deterministic assertions replay fully offline against the materialized workdir; only `judge` (inherently a model call) still reaches the network. `--record`/`--replay` are mutually exclusive.
+
+### New assertions
+- `response_contains` (substring) and `response_matches` (regex) assert on the agent's final message -- previously you could only assert on files it produced.
+- `latency_under` (ms) and `turns_under` (agent turns) gate on run duration and turn count, catching a config that quietly gets slower or chattier.
+
+### New commands
+- `crucible generate`: reads an existing `.claude` config (subagents, skills, CLAUDE.md) and scaffolds a runnable starter suite -- a `subagent_invoked` scenario per subagent, a smoke scenario per skill, and a CLAUDE.md judge smoke test. `--force` overwrites; otherwise existing files are skipped. Every generated scenario validates against the loader.
+- `crucible explain <transcript>`: turns a red run into an actionable diagnosis. A neutral, tool-free model reads a saved transcript (from `run --save-transcripts`) and prints the likely CAUSE plus one concrete FIX to the `.claude` config. `--scenario <file>` adds the prompt intent.
+- `crucible watch`: re-runs the suite whenever the config or scenarios change, with debounced runs and VCS/build-noise filtering. Tightens the local authoring loop.
+
+### CI / visibility
+- `crucible run --badge <file>` writes a [shields.io endpoint](https://shields.io/badges/endpoint-badge) JSON badge (`crucible | N/N passing`, green/red) for a live README badge.
+- `crucible run --pr-comment` posts a results table to the pull request and updates the SAME comment on each run (sticky, hidden-marker identified) instead of spamming. Reads the GitHub Actions environment and skips with a warning outside a PR context.
 
 ## 0.5.1
 - Replace the Stripe dummy key in the red-team hardcode scenario with a non-secret placeholder (keeps npm byte-identical to the repo; avoids secret-scanning false positives). No behavior change.
