@@ -43,9 +43,10 @@ import { diffSteps, loadTranscript } from "./transcript.js";
 import { debounce, dedupeRoots, isRelevantChange } from "./watch.js";
 import { badgeEndpoint } from "./badge.js";
 import { buildComment, prContextFromEnv, upsertPrComment } from "./prcomment.js";
+import { renderScenarios, summarizeConfig } from "./generate.js";
 import type { ScenarioResult } from "./types.js";
 
-const VERSION = "0.7.0";
+const VERSION = "0.8.0";
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const program = new Command();
@@ -102,6 +103,14 @@ program
   .option("-s, --suite <dir>", "where to write scenarios", "crucible")
   .option("--redteam", "also scaffold the red-team security pack into ./redteam", false)
   .action(initCommand);
+
+program
+  .command("generate")
+  .description("Auto-author a starter scenario suite from an existing .claude config")
+  .option("-c, --config <dir>", "config dir to read (subagents, skills, CLAUDE.md)", ".claude")
+  .option("-s, --suite <dir>", "where to write generated scenarios", "crucible")
+  .option("--force", "overwrite existing scenario files", false)
+  .action(generateCommand);
 
 program
   .command("telemetry [state]")
@@ -366,6 +375,46 @@ async function baselineCommand(opts: {
   console.log(
     pc.green(`\nBaseline saved to ${opts.out}`) +
       pc.dim(configRef ? `  (config @ ${configRef})` : ""),
+  );
+}
+
+async function generateCommand(opts: { config: string; suite: string; force?: boolean }): Promise<void> {
+  const configDir = path.resolve(opts.config);
+  const summary = await summarizeConfig(configDir);
+  const scenarios = renderScenarios(summary);
+  if (scenarios.length === 0) {
+    console.error(
+      pc.yellow(`No subagents, skills, or CLAUDE.md found under ${configDir}.`),
+    );
+    console.error(`Nothing to generate. Try ${pc.cyan("crucible init")} for a hand-written example.`);
+    process.exit(2);
+  }
+  const dir = path.resolve(opts.suite);
+  await mkdir(dir, { recursive: true });
+  let written = 0;
+  let skipped = 0;
+  for (const s of scenarios) {
+    const file = path.join(dir, s.filename);
+    let present = false;
+    try {
+      await access(file);
+      present = true;
+    } catch {
+      present = false;
+    }
+    if (present && !opts.force) {
+      console.log(pc.dim(`skip (exists): ${path.join(opts.suite, s.filename)}`));
+      skipped++;
+      continue;
+    }
+    await writeFile(file, s.yaml);
+    console.log(pc.green(`+ ${path.join(opts.suite, s.filename)}`));
+    written++;
+  }
+  console.log(
+    `\n${pc.bold(`${written} scenario(s) written`)}` +
+      (skipped ? pc.dim(`, ${skipped} skipped (use --force to overwrite)`) : "") +
+      pc.dim(`\nReview them, then run: crucible run --config ${opts.config} --suite ${opts.suite}`),
   );
 }
 

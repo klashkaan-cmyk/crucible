@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.8.0
+- New `crucible generate`: reads an existing `.claude` config (subagents, skills, CLAUDE.md) and scaffolds a starter scenario suite -- one `subagent_invoked` scenario per subagent, a smoke scenario per skill, and a CLAUDE.md judge smoke test. Goes from zero to a runnable suite in one command; `--force` overwrites, otherwise existing files are skipped. Every generated scenario validates against the loader.
+
 ## 0.7.0
 - `crucible run --badge <file>` writes a [shields.io endpoint](https://shields.io/badges/endpoint-badge) JSON badge (`crucible | N/N passing`, green/red) you can point a shields URL at for a live README badge.
 - `crucible run --pr-comment` posts a results table to the pull request and updates the SAME comment on every later run (sticky, identified by a hidden marker) instead of spamming new comments. Reads the GitHub Actions environment (`GITHUB_TOKEN`, `GITHUB_REPOSITORY`, PR event) and skips with a warning when run outside that context.

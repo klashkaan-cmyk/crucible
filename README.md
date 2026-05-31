@@ -144,6 +144,20 @@ The terminal shows an aligned, color-coded step diff (tools + subagents, with
 their inputs) plus turn/cost deltas; `--html` writes a standalone, dependency-free
 viewer with the two runs side by side and both final messages in full.
 
+## Generate a starter suite
+
+Writing the first scenarios is the main thing that stops people adopting eval CI.
+`crucible generate` reads your existing config and scaffolds them for you:
+
+```bash
+crucible generate --config .claude --suite crucible
+```
+
+It emits one `subagent_invoked` scenario per subagent, a smoke test per skill,
+and a CLAUDE.md coherence check -- a runnable suite in one command. Generated
+prompts and assertions are a starting point: review and tighten them. Existing
+files are skipped unless you pass `--force`.
+
 ## Watch mode
 
 While authoring a config or scenarios, re-run the suite automatically on every
