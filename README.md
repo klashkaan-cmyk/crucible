@@ -41,6 +41,40 @@ For each scenario, Crucible:
 5. **Repeats k times** -- because headless mode has no seed; reports `pass@k`, `pass^k`, variance, and flags flaky scenarios.
 6. **Gates** -- exits non-zero when a scenario's pass-rate or cost gate fails, so it blocks a PR like any other test. Emits JUnit XML.
 
+## Why not just ask an LLM?
+
+"Can't the model already do all of this -- just ask it whether the config is
+good?" An LLM gives you an *opinion* in one shot. Crucible gives you a
+*measurement*: repeated, observed from real execution, compared to a known-good
+baseline, and enforced as a gate. Five things a single model call structurally
+cannot do:
+
+- **Measure non-determinism.** Headless mode has no seed; output varies run to
+  run. Crucible runs k trials and reports `pass@k`, `pass^k`, variance, and
+  flakiness. One LLM answer is a single sample of a distribution -- it can't tell
+  you the config passes 70% of the time. Only running it ten times can.
+- **Observe what actually happened, not what's plausible.** Hook-based capture
+  records which tools and subagents *really fired*, plus real `total_cost_usd`,
+  turns, and latency. "Did the security-reviewer fire?" -- a model reading the
+  config guesses; Crucible observes.
+- **Detect regression against history.** The whole point is drift over time: a
+  pass rate dropping versus a baseline keyed to a git SHA, a stable scenario
+  going flaky, cost creeping. A model has no memory of last week's behavior.
+  Anthropic shipped a [6-week silent regression its own evals missed](https://www.anthropic.com/engineering/april-23-postmortem);
+  workflow-level evals caught it in ~72h. That incident *is* the argument for
+  this tool.
+- **Run gates you must not hand to a probabilistic model.** `command_not_run`,
+  `no_secrets`, `file_absent`, `cost_under` are cheap, deterministic, and
+  reliable. You do not want a model deciding whether a secret leaked or
+  `rm -rf` ran.
+- **Be a CI gate.** Exit codes, JUnit XML, PR comments, badges, blocking a
+  merge. "Ask an LLM" is not a pipeline gate.
+
+The LLM *is* used here -- as the `judge` assertion -- but deliberately as the
+**softest, most optional signal**: it never fails a gate unless you opt in with
+`min_score`. The single-shot model opinion is exactly what lets a regression
+ship silently; Crucible turns it into a measured, baselined, gated signal.
+
 ## Quick start
 
 ```bash
