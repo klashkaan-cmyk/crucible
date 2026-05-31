@@ -44,9 +44,11 @@ import { debounce, dedupeRoots, isRelevantChange } from "./watch.js";
 import { badgeEndpoint } from "./badge.js";
 import { buildComment, prContextFromEnv, upsertPrComment } from "./prcomment.js";
 import { renderScenarios, summarizeConfig } from "./generate.js";
+import { explain } from "./explain.js";
+import { loadScenario } from "./scenario.js";
 import type { ScenarioResult } from "./types.js";
 
-const VERSION = "0.8.0";
+const VERSION = "0.9.0";
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const program = new Command();
@@ -135,6 +137,14 @@ program
   .description("Diff two saved transcripts step-by-step; --html for a viewer")
   .option("--html <file>", "write a standalone HTML diff viewer")
   .action(diffCommand);
+
+program
+  .command("explain <transcript>")
+  .description("Diagnose a saved transcript: likely cause + a concrete config fix (LLM)")
+  .option("--scenario <file>", "the scenario file this transcript came from (adds intent)")
+  .option("--claude-bin <path>", "path to the claude binary", "claude")
+  .option("--judge-model <model>", "model for the explanation (default: CC default)")
+  .action(explainCommand);
 
 program
   .command("bisect")
@@ -472,6 +482,24 @@ async function diffCommand(
     await writeFile(path.resolve(opts.html), renderHtml(a, b, rows));
     console.log(pc.dim(`\nHTML diff written to ${opts.html}`));
   }
+}
+
+async function explainCommand(
+  transcriptFile: string,
+  opts: { scenario?: string; claudeBin: string; judgeModel?: string },
+): Promise<void> {
+  const telemetry = await ensureConsent();
+  await maybeShowNotice(telemetry);
+
+  const transcript = await loadTranscript(transcriptFile);
+  const scenario = opts.scenario ? await loadScenario(opts.scenario) : undefined;
+
+  console.error(pc.dim(`Analyzing ${transcript.scenario} (trial ${transcript.trial})...\n`));
+  const text = await explain(
+    { transcript, ...(scenario ? { scenario } : {}) },
+    { claudeBin: opts.claudeBin, ...(opts.judgeModel ? { model: opts.judgeModel } : {}) },
+  );
+  console.log(text);
 }
 
 async function bisectCommand(opts: {

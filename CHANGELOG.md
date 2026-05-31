@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.9.0
+- New `crucible explain <transcript>`: turns a red run into an actionable diagnosis. A neutral, tool-free model reads a saved transcript (from `run --save-transcripts`) and prints the likely CAUSE plus one concrete FIX to the `.claude` config. Pass `--scenario <file>` to add the prompt intent. Prompt construction is pure/unit-tested; the model call reuses the judge's `runHeadlessText` path.
+
 ## 0.8.0
 - New `crucible generate`: reads an existing `.claude` config (subagents, skills, CLAUDE.md) and scaffolds a starter scenario suite -- one `subagent_invoked` scenario per subagent, a smoke scenario per skill, and a CLAUDE.md judge smoke test. Goes from zero to a runnable suite in one command; `--force` overwrites, otherwise existing files are skipped. Every generated scenario validates against the loader.
 

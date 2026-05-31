@@ -158,6 +158,20 @@ and a CLAUDE.md coherence check -- a runnable suite in one command. Generated
 prompts and assertions are a starting point: review and tighten them. Existing
 files are skipped unless you pass `--force`.
 
+## Explain a failure
+
+A red gate tells you *that* something broke; `crucible explain` tells you *why*
+and what to change. Point it at a saved transcript:
+
+```bash
+crucible run --suite crucible --save-transcripts .crucible/run
+crucible explain .crucible/run/login.trial0.json --scenario crucible/login.scenario.yaml
+```
+
+A neutral, tool-free model reads what the agent actually did (steps, final
+message, cost/turns) and prints a `CAUSE:` / `FIX:` diagnosis -- one concrete
+config change to try. `--scenario` adds the prompt intent for a sharper read.
+
 ## Watch mode
 
 While authoring a config or scenarios, re-run the suite automatically on every
