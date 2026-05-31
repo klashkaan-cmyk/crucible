@@ -124,6 +124,26 @@ export function parseHeadless(stdout: string): HeadlessResult {
   };
 }
 
+/**
+ * Detect the most common first-run footgun: `claude` ran but was not
+ * authenticated, so every trial "fails" with an opaque message. This usually
+ * means CLAUDE_CONFIG_DIR (the config dir under test) has no credentials -- the
+ * isolated config Crucible points `claude` at is also where `claude` reads its
+ * login. Returns an actionable hint, or null if this is a normal run.
+ */
+export function authFailureHint(headless: HeadlessResult): string | null {
+  if (!headless.isError) return null;
+  if (!/not logged in|please run \/login|invalid api key|authentication/i.test(headless.result)) {
+    return null;
+  }
+  return (
+    `claude is not authenticated for this config (${headless.result.trim()}). ` +
+    `Crucible points claude at the --config dir via CLAUDE_CONFIG_DIR, which is also ` +
+    `where claude reads its login. Fix: copy your ~/.claude/.credentials.json into the ` +
+    `config dir, run \`claude /login\` against it, or set ANTHROPIC_API_KEY.`
+  );
+}
+
 export interface HeadlessTextOptions {
   readonly prompt: string;
   readonly claudeBin?: string;

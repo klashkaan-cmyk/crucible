@@ -48,7 +48,7 @@ import { explain } from "./explain.js";
 import { loadScenario } from "./scenario.js";
 import type { ScenarioResult } from "./types.js";
 
-const VERSION = "0.6.0";
+const VERSION = "0.6.1";
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const program = new Command();

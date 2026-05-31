@@ -15,7 +15,7 @@ import path from "node:path";
 const exec = promisify(execFile);
 import { evaluateAssertions } from "./assertions.js";
 import { loadScenario, type Scenario } from "./scenario.js";
-import { runTrial } from "./runner.js";
+import { runTrial, authFailureHint } from "./runner.js";
 import { aggregate } from "./stats.js";
 import { fromRun, saveTranscript } from "./transcript.js";
 import {
@@ -88,6 +88,15 @@ async function runOneTrial(
       claudeBin: opts.claudeBin,
       judgeModel: opts.judgeModel,
     });
+    const authHint = authFailureHint(run.headless);
+    if (authHint) {
+      if (replayWorkdir) {
+        await cleanupWorkdir(replayWorkdir);
+      } else if (!opts.keepWorkdirs) {
+        await rm(run.workdir, { recursive: true, force: true });
+      }
+      return { index, assertions: [], passed: false, costUsd: 0, durationMs: 0, runError: authHint };
+    }
     const passed = assertions.every((a) => a.status === "pass") && !run.headless.isError;
     if (opts.saveTranscriptsDir) {
       await saveTranscript(opts.saveTranscriptsDir, fromRun(scenario.name, index, run));

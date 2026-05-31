@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.6.1
+- Clear first-run diagnostic when `claude` is not authenticated. Crucible points `claude` at the `--config` dir via `CLAUDE_CONFIG_DIR`, which is also where `claude` reads its login -- so running against a config dir with no credentials previously surfaced as opaque assertion failures ("response does not contain ..."). Now an unauthenticated run reports a single actionable error explaining how to fix it (copy `~/.claude/.credentials.json` into the config dir, `claude /login` against it, or set `ANTHROPIC_API_KEY`).
+
 ## 0.6.0
 A big feature release: deeper assertions, faster local iteration, zero-setup scenario authoring, failure diagnosis, results surfaced in CI, and -- the headline -- free, deterministic CI via record/replay.
 
