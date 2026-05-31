@@ -41,9 +41,11 @@ import { configPath, isEnabled, loadConfig, maybeShowNotice, setEnabled, track }
 import { renderHtml, renderTerminal } from "./diffview.js";
 import { diffSteps, loadTranscript } from "./transcript.js";
 import { debounce, dedupeRoots, isRelevantChange } from "./watch.js";
+import { badgeEndpoint } from "./badge.js";
+import { buildComment, prContextFromEnv, upsertPrComment } from "./prcomment.js";
 import type { ScenarioResult } from "./types.js";
 
-const VERSION = "0.6.0";
+const VERSION = "0.7.0";
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const program = new Command();
@@ -68,6 +70,8 @@ program
   .option("--judge-model <model>", "model for LLM-judge assertions (default: CC default)")
   .option("--save-transcripts <dir>", "save each trial transcript for later `crucible diff`")
   .option("--keep-workdirs", "do not delete trial working copies (debugging)", false)
+  .option("--badge <file>", "write a shields.io endpoint JSON badge to this path")
+  .option("--pr-comment", "post/update a sticky results comment on the PR (CI)", false)
   .action(runCommand);
 
 program
@@ -189,6 +193,8 @@ async function runCommand(opts: {
   judgeModel?: string;
   saveTranscripts?: string;
   keepWorkdirs: boolean;
+  badge?: string;
+  prComment?: boolean;
 }): Promise<void> {
   let telemetry;
   try {
@@ -231,6 +237,23 @@ async function runCommand(opts: {
   if (opts.junit) await writeJunit(opts.junit, results);
   if (opts.markdown) {
     await appendFile(path.resolve(opts.markdown), markdownSummary(results, regressions) + "\n");
+  }
+  if (opts.badge) {
+    await writeFile(path.resolve(opts.badge), JSON.stringify(badgeEndpoint(results)) + "\n");
+    if (!opts.json) console.error(pc.dim(`badge written to ${opts.badge}`));
+  }
+  if (opts.prComment) {
+    const ctx = prContextFromEnv();
+    if (!ctx) {
+      console.error(pc.yellow("--pr-comment: no PR context (need GITHUB_TOKEN, GITHUB_REPOSITORY, and a pull_request event); skipping."));
+    } else {
+      try {
+        const res = await upsertPrComment(ctx, buildComment(results, regressions));
+        if (!opts.json) console.error(pc.dim(`PR comment ${res.action} (#${res.id})`));
+      } catch (err) {
+        console.error(pc.yellow(`--pr-comment failed: ${(err as Error).message}`));
+      }
+    }
   }
 
   await track(telemetry, {

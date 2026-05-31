@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.0
+- `crucible run --badge <file>` writes a [shields.io endpoint](https://shields.io/badges/endpoint-badge) JSON badge (`crucible | N/N passing`, green/red) you can point a shields URL at for a live README badge.
+- `crucible run --pr-comment` posts a results table to the pull request and updates the SAME comment on every later run (sticky, identified by a hidden marker) instead of spamming new comments. Reads the GitHub Actions environment (`GITHUB_TOKEN`, `GITHUB_REPOSITORY`, PR event) and skips with a warning when run outside that context.
+
 ## 0.6.0
 - New assertions on the agent's final response: `response_contains` (substring) and `response_matches` (regex). Until now you could only assert on files the agent produced, not on what it said.
 - New performance-gate assertions: `latency_under` (milliseconds) and `turns_under` (agent turns). These read the run duration and turn count the runner already captures, so you can catch a config that quietly gets slower or chattier.

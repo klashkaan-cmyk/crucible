@@ -157,6 +157,22 @@ It watches both the config dir and the scenario dir, debounces a burst of edits
 into a single run, and prints the gate summary after each pass. VCS and build
 noise (`.git`, `node_modules`, `dist`) is ignored. Ctrl-C to stop.
 
+## Badges & PR comments
+
+Surface results where people look. After a run:
+
+```bash
+crucible run --badge badge.json     # shields.io endpoint JSON -> live README badge
+crucible run --pr-comment           # sticky PR results comment (in CI)
+```
+
+The badge renders as `crucible | N/N passing` (green when all gates pass, red
+otherwise) via a shields.io endpoint URL pointed at the raw `badge.json`. The PR
+comment posts a results table and updates itself in place on every run, so a PR
+shows one always-current Crucible comment rather than a pile of them. It needs
+the GitHub Actions environment (`GITHUB_TOKEN`, a `pull_request` event); outside
+CI it warns and skips.
+
 ## CI
 
 `crucible init` drops a ready GitHub Action that runs on changes to `.claude/**`. It installs Claude Code + Crucible, runs the suite, and uploads the JUnit report. Set `ANTHROPIC_API_KEY` as a repo secret.
