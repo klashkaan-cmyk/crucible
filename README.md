@@ -43,37 +43,25 @@ For each scenario, Crucible:
 
 ## Why not just ask an LLM?
 
-"Can't the model already do all of this -- just ask it whether the config is
-good?" An LLM gives you an *opinion* in one shot. Crucible gives you a
-*measurement*: repeated, observed from real execution, compared to a known-good
-baseline, and enforced as a gate. Five things a single model call structurally
-cannot do:
+"Can't the model already do this -- just ask it whether the config is good?"
+An LLM gives you an *opinion* in one shot. Crucible gives you a *measurement*:
 
-- **Measure non-determinism.** Headless mode has no seed; output varies run to
-  run. Crucible runs k trials and reports `pass@k`, `pass^k`, variance, and
-  flakiness. One LLM answer is a single sample of a distribution -- it can't tell
-  you the config passes 70% of the time. Only running it ten times can.
-- **Observe what actually happened, not what's plausible.** Hook-based capture
-  records which tools and subagents *really fired*, plus real `total_cost_usd`,
-  turns, and latency. "Did the security-reviewer fire?" -- a model reading the
-  config guesses; Crucible observes.
-- **Detect regression against history.** The whole point is drift over time: a
-  pass rate dropping versus a baseline keyed to a git SHA, a stable scenario
-  going flaky, cost creeping. A model has no memory of last week's behavior.
-  Anthropic shipped a [6-week silent regression its own evals missed](https://www.anthropic.com/engineering/april-23-postmortem);
-  workflow-level evals caught it in ~72h. That incident *is* the argument for
-  this tool.
-- **Run gates you must not hand to a probabilistic model.** `command_not_run`,
-  `no_secrets`, `file_absent`, `cost_under` are cheap, deterministic, and
-  reliable. You do not want a model deciding whether a secret leaked or
-  `rm -rf` ran.
-- **Be a CI gate.** Exit codes, JUnit XML, PR comments, badges, blocking a
-  merge. "Ask an LLM" is not a pipeline gate.
+- **Across variance.** Headless mode has no seed; output varies run to run. One
+  answer is a single sample -- it can't tell you the config passes 70% of the
+  time. Crucible runs k trials and reports `pass@k`, `pass^k`, and flakiness.
+- **Against history.** A model has no memory of last week's behavior. Crucible
+  gates on drift versus a baseline keyed to a git SHA. Anthropic shipped a
+  [6-week silent regression its own evals missed](https://www.anthropic.com/engineering/april-23-postmortem);
+  workflow-level evals caught it in ~72h. That incident *is* the argument here.
+- **On signals you can't hand a probabilistic model.** `command_not_run`,
+  `no_secrets`, `cost_under` -- and real `total_cost_usd`, turns, and which
+  subagents *actually fired* -- are observed and deterministic. You don't want a
+  model guessing whether a secret leaked, then wiring that into a CI exit code.
 
-The LLM *is* used here -- as the `judge` assertion -- but deliberately as the
+The LLM *is* used -- as the `judge` assertion -- but deliberately as the
 **softest, most optional signal**: it never fails a gate unless you opt in with
-`min_score`. The single-shot model opinion is exactly what lets a regression
-ship silently; Crucible turns it into a measured, baselined, gated signal.
+`min_score`. The single-shot opinion is exactly what lets a regression ship
+silently; Crucible turns it into a measured, baselined, gated one.
 
 ## Quick start
 
