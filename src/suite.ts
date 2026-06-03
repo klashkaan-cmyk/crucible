@@ -40,6 +40,8 @@ export interface SuiteOptions {
   readonly recordDir?: string;
   /** When set, replay runs from cassettes in this dir instead of calling claude. */
   readonly replayDir?: string;
+  /** Override each scenario's own `trials` (used by optimize's two-stage k). */
+  readonly trialsOverride?: number;
 }
 
 export async function runScenarioFile(
@@ -51,7 +53,8 @@ export async function runScenarioFile(
     ? path.resolve(path.dirname(file), scenario.fixture)
     : undefined;
 
-  const indices = Array.from({ length: scenario.trials }, (_, i) => i);
+  const trialCount = opts.trialsOverride ?? scenario.trials;
+  const indices = Array.from({ length: trialCount }, (_, i) => i);
   const limit = Math.max(1, opts.concurrency ?? 1);
   const trials = await pool(indices, limit, (i) => runOneTrial(i, scenario, fixtureDir, opts));
   trials.sort((a, b) => a.index - b.index);
