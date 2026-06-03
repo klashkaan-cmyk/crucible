@@ -38,6 +38,7 @@ import {
   withinAllowlist,
   type Worktree,
 } from "./worktree.js";
+import { lintConfig, countByLevel } from "./lint.js";
 import type { Program } from "./program.js";
 import type { ScenarioResult } from "./types.js";
 
@@ -84,6 +85,99 @@ export function runSuiteScorer(
   };
 }
 
+// --- infra-error handling (auth / rate-limit) -------------------------------
+
+export type InfraKind = "auth" | "rate-limit" | "aborted";
+
+export class InfraError extends Error {
+  readonly kind: InfraKind;
+  constructor(kind: InfraKind, message: string) {
+    super(message);
+    this.name = "InfraError";
+    this.kind = kind;
+  }
+}
+
+const AUTH_RE = /not authenticated|not logged in|please run \/login|invalid api key|authentication/i;
+const RATE_RE = /rate.?limit|\b429\b|overloaded|too many requests|usage limit/i;
+
+/**
+ * Classify a scored result as an infrastructure failure (not a candidate fault)
+ * by inspecting trial runErrors. Auth takes priority over rate-limit. Returns
+ * null for a normal run. Conservative on rate-limit -- only an explicit runError
+ * is inspected, never a normal assertion failure -- to avoid the false-positive
+ * rate-limit-detector trap.
+ */
+export function classifyInfra(results: ReadonlyArray<ScenarioResult>): InfraKind | null {
+  let rate = false;
+  for (const r of results) {
+    for (const t of r.trials) {
+      if (!t.runError) continue;
+      if (AUTH_RE.test(t.runError)) return "auth";
+      if (RATE_RE.test(t.runError)) rate = true;
+    }
+  }
+  return rate ? "rate-limit" : null;
+}
+
+function ensureNoInfra(results: ReadonlyArray<ScenarioResult>): void {
+  const infra = classifyInfra(results);
+  if (infra) throw new InfraError(infra, `${infra} failure detected in scoring`);
+}
+
+export interface RetryOptions {
+  /** Max exponential-backoff retries for rate-limit (default 5). */
+  readonly maxRateRetries?: number;
+  /** Max pause-and-poll cycles for auth (default 20). */
+  readonly maxAuthWaits?: number;
+  /** Base backoff for rate-limit, doubled each attempt (default 1000ms). */
+  readonly baseBackoffMs?: number;
+  /** Pause between auth polls -- a token refresh / re-login window (default 30s). */
+  readonly authWaitMs?: number;
+  readonly sleep?: (ms: number) => Promise<void>;
+  readonly onWait?: (kind: InfraKind, attempt: number, waitMs: number) => void;
+  readonly signal?: AbortSignal;
+}
+
+const defaultSleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Wrap a scorer so transient infra failures never reach the accept-gate: an auth
+ * failure pauses and re-polls (a token can refresh or be re-logged-in mid-run --
+ * see the CEO 401 auth-loop), a rate-limit backs off exponentially. Throws
+ * InfraError only when retries are exhausted or aborted, so an infra blip is
+ * never mistaken for a failed candidate and never burns the plateau counter.
+ */
+export function withRetry(score: ScoreFn, retry: RetryOptions = {}): ScoreFn {
+  const maxRate = retry.maxRateRetries ?? 5;
+  const maxAuth = retry.maxAuthWaits ?? 20;
+  const baseBackoff = retry.baseBackoffMs ?? 1000;
+  const authWait = retry.authWaitMs ?? 30_000;
+  const sleep = retry.sleep ?? defaultSleep;
+  return async (req) => {
+    let rateAttempt = 0;
+    let authAttempt = 0;
+    for (;;) {
+      if (retry.signal?.aborted) throw new InfraError("aborted", "aborted before scoring");
+      const results = await score(req);
+      const infra = classifyInfra(results);
+      if (!infra) return results;
+      if (infra === "auth") {
+        if (authAttempt >= maxAuth) throw new InfraError("auth", "auth failure persisted after polling");
+        retry.onWait?.("auth", authAttempt, authWait);
+        await sleep(authWait);
+        authAttempt += 1;
+      } else {
+        if (rateAttempt >= maxRate) throw new InfraError("rate-limit", "rate limit persisted after backoff");
+        const waitMs = baseBackoff * 2 ** rateAttempt;
+        retry.onWait?.("rate-limit", rateAttempt, waitMs);
+        await sleep(waitMs);
+        rateAttempt += 1;
+      }
+    }
+  };
+}
+
 // --- options / results ------------------------------------------------------
 
 export interface OptimizeOptions {
@@ -100,6 +194,16 @@ export interface OptimizeOptions {
   readonly score: ScoreFn;
   /** When set, every IterationRecord is appended here as JSONL. */
   readonly ledgerPath?: string;
+  /**
+   * Re-score the current best every N accepted candidates so the bar does not
+   * drift on a single noisy baseline snapshot. Off when unset.
+   */
+  readonly remeasureEvery?: number;
+  /**
+   * Resume a prior run: check out the existing branch at its tip instead of
+   * resetting it, so the accepted-candidate lineage and the ledger continue.
+   */
+  readonly resume?: boolean;
   readonly signal?: AbortSignal;
 }
 
@@ -250,7 +354,7 @@ export function decide(
 
 export async function optimize(opts: OptimizeOptions): Promise<OptimizeSummary> {
   const repo = await resolveConfigRepo(opts.configDir);
-  const wt = await openWorktree(repo, opts.branch);
+  const wt = await openWorktree(repo, opts.branch, { reset: !opts.resume });
   const fit = opts.program.fitness;
   const records: IterationRecord[] = [];
   const rejected = initRejectCounts();
@@ -293,7 +397,9 @@ export async function optimize(opts: OptimizeOptions): Promise<OptimizeSummary> 
         records.push(rec);
         if (verdict.kind === "reject") {
           rejected[verdict.reason] += 1;
-          plateau += 1;
+          // Infra failures (run-error) are not the candidate's fault -- they must
+          // not advance the plateau counter toward a false "converged".
+          if (verdict.reason !== "run-error") plateau += 1;
         }
         await writeLedger(opts.ledgerPath, rec);
       };
@@ -309,69 +415,100 @@ export async function optimize(opts: OptimizeOptions): Promise<OptimizeSummary> 
         continue;
       }
 
-      // 3. SCREEN cheap.
-      const screen = await opts.score({
-        configDir: wt.configDir, scenarioDir: fit.suite, k: fit.k_screen, kind: "screen", iter,
-      });
-      iterCost += sumRealCost(screen);
-      cum += sumRealCost(screen);
-      if (!promising(screen, best)) {
-        await record({ kind: "reject", reason: "insufficient-gain", detail: "below best on cheap screen" });
+      // 2b. LINT PRE-GATE (free) -- reject a malformed candidate before scoring.
+      const lint = await lintConfig(wt.configDir);
+      if (countByLevel(lint).error > 0) {
+        const firstError = lint.find((f) => f.level === "error");
+        await record({ kind: "reject", reason: "lint-error", detail: firstError?.message ?? "lint error" });
         continue;
       }
 
-      // 3b. CONFIRM expensive (train + safety).
-      const cand = await opts.score({
-        configDir: wt.configDir, scenarioDir: fit.suite, k: fit.k_confirm, kind: "confirm", iter,
-      });
-      const safety = fit.safety
-        ? await opts.score({ configDir: wt.configDir, scenarioDir: fit.safety, k: fit.k_confirm, kind: "confirm", iter })
-        : [];
-      const confirmCost = sumRealCost(cand) + sumRealCost(safety);
-      iterCost += confirmCost;
-      cum += confirmCost;
-
-      // 4. ACCEPT GATE.
-      const verdict = decide(cand, safety, best, opts.program);
-      if (verdict.kind === "reject") {
-        await record(verdict);
-        continue;
-      }
-
-      // 5. HOLDOUT -- only candidates that passed train pay for it.
-      let holdout: ScenarioResult[] | undefined;
-      if (fit.holdout) {
-        holdout = await opts.score({
-          configDir: wt.configDir, scenarioDir: fit.holdout, k: fit.k_confirm, kind: "confirm", iter,
+      try {
+        // 3. SCREEN cheap.
+        const screen = await opts.score({
+          configDir: wt.configDir, scenarioDir: fit.suite, k: fit.k_screen, kind: "screen", iter,
         });
-        const hCost = sumRealCost(holdout);
-        iterCost += hCost;
-        cum += hCost;
-        if (fit.accept.holdout_no_regression && best.holdoutBaseline) {
-          const hr = diffAgainstBaseline(holdout, best.holdoutBaseline, {
-            passRateDrop: 0,
-            costIncrease: fit.accept.cost_tolerance,
+        ensureNoInfra(screen);
+        iterCost += sumRealCost(screen);
+        cum += sumRealCost(screen);
+        if (!promising(screen, best)) {
+          await record({ kind: "reject", reason: "insufficient-gain", detail: "below best on cheap screen" });
+          continue;
+        }
+
+        // 3b. CONFIRM expensive (train + safety).
+        const cand = await opts.score({
+          configDir: wt.configDir, scenarioDir: fit.suite, k: fit.k_confirm, kind: "confirm", iter,
+        });
+        ensureNoInfra(cand);
+        const safety = fit.safety
+          ? await opts.score({ configDir: wt.configDir, scenarioDir: fit.safety, k: fit.k_confirm, kind: "confirm", iter })
+          : [];
+        ensureNoInfra(safety);
+        const confirmCost = sumRealCost(cand) + sumRealCost(safety);
+        iterCost += confirmCost;
+        cum += confirmCost;
+
+        // 4. ACCEPT GATE.
+        const verdict = decide(cand, safety, best, opts.program);
+        if (verdict.kind === "reject") {
+          await record(verdict);
+          continue;
+        }
+
+        // 5. HOLDOUT -- only candidates that passed train pay for it.
+        let holdout: ScenarioResult[] | undefined;
+        if (fit.holdout) {
+          holdout = await opts.score({
+            configDir: wt.configDir, scenarioDir: fit.holdout, k: fit.k_confirm, kind: "confirm", iter,
           });
-          if (hr.length > 0) {
-            await record({ kind: "reject", reason: "holdout-regression", detail: hr[0]!.detail });
-            continue;
+          ensureNoInfra(holdout);
+          const hCost = sumRealCost(holdout);
+          iterCost += hCost;
+          cum += hCost;
+          if (fit.accept.holdout_no_regression && best.holdoutBaseline) {
+            const hr = diffAgainstBaseline(holdout, best.holdoutBaseline, {
+              passRateDrop: 0,
+              costIncrease: fit.accept.cost_tolerance,
+            });
+            if (hr.length > 0) {
+              await record({ kind: "reject", reason: "holdout-regression", detail: hr[0]!.detail });
+              continue;
+            }
           }
         }
-      }
 
-      // 6. KEEP -- commit onto the branch, advance best, reset the plateau.
-      const commit = await commitWorktree(wt, `optimize: iter ${iter} (+${verdict.gain.toFixed(3)})`);
-      commits.push(commit);
-      best = {
-        objective: verdict.objective,
-        cost: medianCostOf(cand),
-        baseline: toBaseline(cand),
-        holdoutBaseline: holdout ? toBaseline(holdout) : best.holdoutBaseline,
-        trainResults: cand,
-      };
-      accepted += 1;
-      plateau = 0;
-      await record(verdict, commit);
+        // 6. KEEP -- commit onto the branch, advance best, reset the plateau.
+        const commit = await commitWorktree(wt, `optimize: iter ${iter} (+${verdict.gain.toFixed(3)})`);
+        commits.push(commit);
+        best = {
+          objective: verdict.objective,
+          cost: medianCostOf(cand),
+          baseline: toBaseline(cand),
+          holdoutBaseline: holdout ? toBaseline(holdout) : best.holdoutBaseline,
+          trainResults: cand,
+        };
+        accepted += 1;
+        plateau = 0;
+        await record(verdict, commit);
+
+        // 6b. RE-MEASURE the best periodically so the bar does not drift on a
+        // single noisy snapshot. Re-scores the just-committed tip.
+        if (opts.remeasureEvery && accepted % opts.remeasureEvery === 0) {
+          const re = await scoreBaseline(wt, opts, iter);
+          best = re.best;
+          cum += re.costUsd;
+        }
+      } catch (err: unknown) {
+        if (err instanceof InfraError) {
+          // Infra failure mid-iteration: record it, do not burn the plateau, and
+          // either stop (aborted) or move on -- a retrying scorer absorbs blips.
+          await record({ kind: "reject", reason: "run-error", detail: `${err.kind}: ${err.message}` });
+          if (opts.signal?.aborted || err.kind === "aborted") break;
+          continue;
+        }
+        throw err;
+      }
     }
 
     return {
@@ -395,17 +532,20 @@ export async function optimize(opts: OptimizeOptions): Promise<OptimizeSummary> 
 async function scoreBaseline(
   wt: Worktree,
   opts: OptimizeOptions,
+  iter = 0,
 ): Promise<{ best: Best; costUsd: number }> {
   const fit = opts.program.fitness;
   const train = await opts.score({
-    configDir: wt.configDir, scenarioDir: fit.suite, k: fit.k_confirm, kind: "confirm", iter: 0,
+    configDir: wt.configDir, scenarioDir: fit.suite, k: fit.k_confirm, kind: "confirm", iter,
   });
+  ensureNoInfra(train);
   let costUsd = sumRealCost(train);
   let holdout: ScenarioResult[] | undefined;
   if (fit.holdout) {
     holdout = await opts.score({
-      configDir: wt.configDir, scenarioDir: fit.holdout, k: fit.k_confirm, kind: "confirm", iter: 0,
+      configDir: wt.configDir, scenarioDir: fit.holdout, k: fit.k_confirm, kind: "confirm", iter,
     });
+    ensureNoInfra(holdout);
     costUsd += sumRealCost(holdout);
   }
   return {

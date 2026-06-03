@@ -35,15 +35,30 @@ export interface Worktree {
   dispose(): Promise<void>;
 }
 
+export interface OpenWorktreeOptions {
+  /**
+   * Reset the branch to HEAD (default). `false` checks out an EXISTING branch at
+   * its current tip -- used to resume a prior optimize run without discarding the
+   * accepted-candidate lineage already on that branch.
+   */
+  readonly reset?: boolean;
+}
+
 /**
- * Add a writable worktree on a fresh branch at HEAD. `-B` creates or resets the
- * branch, so a re-run with the same name starts clean.
+ * Add a writable worktree on `branch`. With `reset` (default), `-B` creates or
+ * resets the branch at HEAD so a re-run starts clean; with `reset: false` it
+ * checks out the existing branch at its tip to resume.
  */
-export async function openWorktree(repo: ConfigRepo, branch: string): Promise<Worktree> {
+export async function openWorktree(
+  repo: ConfigRepo,
+  branch: string,
+  opts: OpenWorktreeOptions = {},
+): Promise<Worktree> {
   const root = await mkdtemp(path.join(tmpdir(), "crucible-opt-"));
-  await exec("git", [
-    "-C", repo.root, "worktree", "add", "-B", branch, "--force", root, "HEAD",
-  ]);
+  const args = (opts.reset ?? true)
+    ? ["-C", repo.root, "worktree", "add", "-B", branch, "--force", root, "HEAD"]
+    : ["-C", repo.root, "worktree", "add", "--force", root, branch];
+  await exec("git", args);
   return {
     root,
     configDir: path.join(root, repo.relConfig),

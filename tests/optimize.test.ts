@@ -9,8 +9,12 @@ import {
   optimize,
   objectiveOf,
   significantGain,
+  withRetry,
+  classifyInfra,
+  InfraError,
   type EditorFn,
   type ScoreFn,
+  type ScoreRequest,
   type OptimizeOptions,
 } from "../src/optimize.js";
 import type { ScenarioResult, TrialResult } from "../src/types.js";
@@ -78,6 +82,26 @@ function scorer(plan: (dir: string, k: number, iter: number) => ScenarioResult[]
   return async ({ scenarioDir, k, iter }) => plan(scenarioDir, k, iter);
 }
 
+/** A scored result whose trials carry an infra runError (auth / rate-limit). */
+function infraResult(name: string, k: number, msg: string): ScenarioResult {
+  const trials: TrialResult[] = Array.from({ length: k }, (_, i) => ({
+    index: i,
+    assertions: [],
+    passed: false,
+    costUsd: 0,
+    durationMs: 0,
+    runError: msg,
+  }));
+  return { name, trials, passRate: 0, stable: false, medianCostUsd: 0, gatePassed: false, gateReason: "" };
+}
+
+const REQ: ScoreRequest = { configDir: "x", scenarioDir: "train", k: 3, kind: "confirm", iter: 1 };
+
+async function branchCommitCount(repo: string, branch: string): Promise<number> {
+  const { stdout } = await exec("git", ["-C", repo, "rev-list", "--count", branch]);
+  return Number(stdout.trim());
+}
+
 const editInScope: EditorFn = async (wt, ctx) => {
   await writeFile(path.join(wt.configDir, "note.md"), `change ${ctx.iter}`);
   return { message: `edit ${ctx.iter}`, costUsd: 0 };
@@ -86,6 +110,10 @@ const editNoop: EditorFn = async () => ({ message: "noop", costUsd: 0 });
 const editOutOfScope: EditorFn = async (wt) => {
   await writeFile(path.join(wt.root, "outside.txt"), "x");
   return { message: "escaped", costUsd: 0 };
+};
+const editBadSettings: EditorFn = async (wt) => {
+  await writeFile(path.join(wt.configDir, "settings.json"), "{ this is not valid json");
+  return { message: "broke settings", costUsd: 0 };
 };
 
 function baseOpts(
@@ -234,5 +262,127 @@ describe("optimize loop", () => {
     expect(summary.accepted).toBe(0);
     expect(summary.rejected["no-op"]).toBe(3);
     expect(summary.records).toHaveLength(3);
+  });
+
+  it("rejects a candidate that fails lint, before scoring", async () => {
+    const dir = await makeRepo();
+    const program = await loadProg();
+    let scoredCandidate = 0;
+    const score = scorer((_d, k, iter) => {
+      if (iter > 0) scoredCandidate++;
+      return [result("s", 12, k)];
+    });
+    const summary = await optimize(baseOpts(dir, program, editBadSettings, score));
+    expect(summary.accepted).toBe(0);
+    expect(summary.rejected["lint-error"]).toBe(1);
+    expect(scoredCandidate).toBe(0);
+  });
+
+  it("treats infra failures as run-error and does not burn the plateau", async () => {
+    const dir = await makeRepo();
+    const program = await loadProg();
+    const score = scorer((d, k, iter) => {
+      if (d !== "train" || iter === 0) return [result(d, 6, k)]; // clean baseline
+      return [infraResult("s", k, "API rate limit exceeded (429)")];
+    });
+    const summary = await optimize(
+      baseOpts(dir, program, editInScope, score, { maxIters: 4, plateauIters: 2 }),
+    );
+    expect(summary.accepted).toBe(0);
+    // 4 iterations ran despite plateauIters=2 -> infra never advanced the plateau
+    expect(summary.rejected["run-error"]).toBe(4);
+    expect(summary.records).toHaveLength(4);
+  });
+
+  it("resume preserves the existing branch lineage", async () => {
+    const dir = await makeRepo();
+    const program = await loadProg();
+    const accept = scorer((d, k, iter) => {
+      if (d === "safety") return [result("sec", k, k)];
+      if (d === "holdout") return [result("h", 6, k)];
+      return [result("s", iter === 0 ? 6 : 11, k)];
+    });
+    const run1 = await optimize(baseOpts(dir, program, editInScope, accept));
+    expect(run1.accepted).toBe(1);
+    const count1 = await branchCommitCount(dir, "optimize/test");
+    expect(count1).toBe(2);
+
+    // resume with a no-op editor: no new accepts, but the branch must survive
+    const run2 = await optimize(baseOpts(dir, program, editNoop, accept, { resume: true }));
+    expect(run2.accepted).toBe(0);
+    expect(await branchCommitCount(dir, "optimize/test")).toBe(2);
+  });
+
+  it("re-measures the best after the configured interval", async () => {
+    const dir = await makeRepo();
+    const program = await loadProg();
+    let trainCalls = 0;
+    const score = scorer((d, k, iter) => {
+      if (d === "train") trainCalls++;
+      if (d === "safety") return [result("sec", k, k)];
+      if (d === "holdout") return [result("h", 6, k)];
+      return [result("s", iter === 0 ? 6 : 11, k)];
+    });
+    const summary = await optimize(baseOpts(dir, program, editInScope, score, { remeasureEvery: 1 }));
+    expect(summary.accepted).toBe(1);
+    // baseline + screen + confirm + one re-measure of the accepted tip
+    expect(trainCalls).toBe(4);
+    expect(summary.finalObjective).toBeGreaterThan(summary.baselineObjective);
+  });
+});
+
+describe("withRetry", () => {
+  it("passes clean results straight through without sleeping", async () => {
+    let slept = 0;
+    const score = withRetry(async () => [result("s", 3, 3)], { sleep: async () => { slept++; } });
+    const out = await score(REQ);
+    expect(out).toHaveLength(1);
+    expect(slept).toBe(0);
+  });
+
+  it("backs off exponentially on rate-limit then succeeds", async () => {
+    const waits: number[] = [];
+    let n = 0;
+    const flaky: ScoreFn = async () =>
+      n++ < 2 ? [infraResult("s", 3, "rate limit 429")] : [result("s", 3, 3)];
+    const score = withRetry(flaky, { sleep: async (ms) => { waits.push(ms); }, baseBackoffMs: 10 });
+    const out = await score(REQ);
+    expect(out[0]!.passRate).toBe(1);
+    expect(waits).toEqual([10, 20]);
+  });
+
+  it("pauses and re-polls on auth failure", async () => {
+    const waits: number[] = [];
+    let n = 0;
+    const flaky: ScoreFn = async () =>
+      n++ < 3 ? [infraResult("s", 3, "not authenticated, please run /login")] : [result("s", 3, 3)];
+    const score = withRetry(flaky, { sleep: async (ms) => { waits.push(ms); }, authWaitMs: 100 });
+    await score(REQ);
+    expect(waits).toEqual([100, 100, 100]);
+  });
+
+  it("throws InfraError when retries are exhausted", async () => {
+    const score = withRetry(async () => [infraResult("s", 3, "rate limit")], {
+      sleep: async () => {},
+      maxRateRetries: 2,
+    });
+    const err = await score(REQ).then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(InfraError);
+    expect((err as InfraError).kind).toBe("rate-limit");
+  });
+
+  it("aborts via signal", async () => {
+    const ac = new AbortController();
+    ac.abort();
+    const score = withRetry(async () => [result("s", 3, 3)], { signal: ac.signal, sleep: async () => {} });
+    await expect(score(REQ)).rejects.toMatchObject({ kind: "aborted" });
+  });
+});
+
+describe("classifyInfra", () => {
+  it("flags auth over rate-limit, and clears clean runs", () => {
+    expect(classifyInfra([infraResult("a", 2, "invalid api key")])).toBe("auth");
+    expect(classifyInfra([infraResult("a", 2, "overloaded")])).toBe("rate-limit");
+    expect(classifyInfra([result("a", 2, 2)])).toBeNull();
   });
 });
