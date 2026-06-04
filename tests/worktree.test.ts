@@ -112,4 +112,35 @@ describe("worktree git plumbing", () => {
     expect(await readFile(path.join(dir, ".claude", "CLAUDE.md"), "utf8")).toBe("v1");
     await wt.dispose();
   });
+
+  it("seeds an untracked file into the config dir and re-seeds after reset", async () => {
+    const dir = await gitRepo();
+    const repo = await resolveConfigRepo(path.join(dir, ".claude"));
+    // a credential-like source outside the repo, never tracked/committed
+    const credSrc = path.join(await mkdtemp(path.join(tmpdir(), "crucible-cred-")), ".credentials.json");
+    await writeFile(credSrc, "{\"token\":\"seed-me\"}");
+
+    const wt = await openWorktree(repo, "optimize/seed", {
+      seed: [{ from: credSrc, to: path.join(".claude", ".credentials.json") }],
+    });
+    const dest = path.join(wt.configDir, ".credentials.json");
+    expect(await readFile(dest, "utf8")).toBe("{\"token\":\"seed-me\"}");
+
+    // an un-ignored seed shows up as an untracked change; reset wipes it then re-seeds
+    await resetWorktree(wt);
+    expect(await readFile(dest, "utf8")).toBe("{\"token\":\"seed-me\"}");
+    await wt.dispose();
+  });
+
+  it("skips a missing seed source without throwing", async () => {
+    const dir = await gitRepo();
+    const repo = await resolveConfigRepo(path.join(dir, ".claude"));
+    const wt = await openWorktree(repo, "optimize/seed-missing", {
+      seed: [{ from: "/no/such/.credentials.json", to: path.join(".claude", ".credentials.json") }],
+    });
+    // worktree still usable; the missing seed simply did not land
+    expect(await readFile(path.join(wt.configDir, "CLAUDE.md"), "utf8")).toBe("v1");
+    await expect(readFile(path.join(wt.configDir, ".credentials.json"), "utf8")).rejects.toThrow();
+    await wt.dispose();
+  });
 });

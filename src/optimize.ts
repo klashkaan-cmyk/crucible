@@ -17,6 +17,7 @@
  */
 
 import { appendFile } from "node:fs/promises";
+import path from "node:path";
 import { resolveConfigRepo } from "./bisect.js";
 import {
   diffAgainstBaseline,
@@ -209,6 +210,13 @@ export interface OptimizeOptions {
    * history is untouched. Each candidate is judged against the same baseline.
    */
   readonly dryRun?: boolean;
+  /**
+   * Absolute path to a `.credentials.json` to seed into each scoring worktree so
+   * headless claude can authenticate there. Needed when the config under test is
+   * a git repo whose credentials are (correctly) untracked. Ignored when claude
+   * authenticates via ANTHROPIC_API_KEY instead.
+   */
+  readonly credentialsPath?: string;
   readonly signal?: AbortSignal;
 }
 
@@ -490,7 +498,10 @@ export function optimizeMarkdown(summary: OptimizeSummary): string {
 
 export async function optimize(opts: OptimizeOptions): Promise<OptimizeSummary> {
   const repo = await resolveConfigRepo(opts.configDir);
-  const wt = await openWorktree(repo, opts.branch, { reset: !opts.resume });
+  const seed = opts.credentialsPath
+    ? [{ from: opts.credentialsPath, to: path.join(repo.relConfig, ".credentials.json") }]
+    : [];
+  const wt = await openWorktree(repo, opts.branch, { reset: !opts.resume, seed });
   const records: IterationRecord[] = [];
   const rejected = initRejectCounts();
   const commits: string[] = [];

@@ -197,6 +197,7 @@ program
   .option("--ledger <file>", "append a JSONL run ledger here", ".crucible/optimize.jsonl")
   .option("--remeasure-every <n>", "re-score the best every N accepted candidates")
   .option("--max-turns <n>", "editor turn cap", "40")
+  .option("--claude-credentials <path>", "copy this .credentials.json into each scoring worktree (auth for untracked-secret repos)")
   .option("--resume", "resume the existing branch instead of resetting it", false)
   .option("--dry-run", "evaluate would-accepts but never commit", false)
   .option("--pr-comment", "post/update a sticky results comment on the PR (CI)", false)
@@ -228,6 +229,7 @@ program
   .option("--journal <file>", "append the research journal here", ".crucible/research/journal.md")
   .option("--ideas <file>", "append the idea backlog (JSONL) here", ".crucible/research/ideas.jsonl")
   .option("--run-id <id>", "stable id for branch naming (default: date)")
+  .option("--claude-credentials <path>", "copy this .credentials.json into each scoring worktree (auth for untracked-secret repos)")
   .option("--pr-comment", "post/update a sticky results comment on the PR (CI)", false)
   .action(researchCommand);
 
@@ -377,6 +379,7 @@ async function optimizeCommand(opts: {
   ledger: string;
   remeasureEvery?: string;
   maxTurns: string;
+  claudeCredentials?: string;
   resume: boolean;
   dryRun: boolean;
   prComment: boolean;
@@ -448,6 +451,7 @@ async function optimizeCommand(opts: {
     resume: opts.resume,
     dryRun: opts.dryRun,
     ...(opts.remeasureEvery ? { remeasureEvery: parseInt(opts.remeasureEvery, 10) } : {}),
+    ...(opts.claudeCredentials ? { credentialsPath: path.resolve(opts.claudeCredentials) } : {}),
   };
 
   console.error(
@@ -505,6 +509,7 @@ async function researchCommand(opts: {
   journal: string;
   ideas: string;
   runId?: string;
+  claudeCredentials?: string;
   prComment: boolean;
 }): Promise<void> {
   let telemetry;
@@ -594,6 +599,7 @@ async function researchCommand(opts: {
     holdoutFraction: parseFloat(opts.holdoutFraction) || 0.3,
     ...(synthesize ? { synthesize } : {}),
     ...(canaryDir ? { canaryDir: path.resolve(canaryDir) } : {}),
+    ...(opts.claudeCredentials ? { credentialsPath: path.resolve(opts.claudeCredentials) } : {}),
   };
 
   console.error(

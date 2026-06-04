@@ -15,7 +15,7 @@
  */
 
 import { execFile } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -24,6 +24,14 @@ import type { MutableSurface } from "./program.js";
 
 const exec = promisify(execFile);
 
+/** A file copied into the worktree after creation/reset (e.g. credentials). */
+export interface WorktreeSeed {
+  /** Absolute source path on disk. A missing source is skipped (best-effort). */
+  readonly from: string;
+  /** Destination path relative to the worktree root. */
+  readonly to: string;
+}
+
 export interface Worktree {
   /** The worktree's working-tree root (the git work-tree). */
   readonly root: string;
@@ -31,6 +39,8 @@ export interface Worktree {
   readonly configDir: string;
   /** The branch the worktree is checked out on. */
   readonly branch: string;
+  /** Files re-copied into the worktree after every reset (see WorktreeSeed). */
+  readonly seed: ReadonlyArray<WorktreeSeed>;
   /** Remove the worktree and its checkout; idempotent, never throws. */
   dispose(): Promise<void>;
 }
@@ -48,6 +58,28 @@ export interface OpenWorktreeOptions {
    * reset is false.
    */
   readonly from?: string;
+  /**
+   * Untracked files to copy into the worktree after creation and after each
+   * reset. The motivating case is credentials: a fresh `git worktree add`
+   * materializes only TRACKED files, so headless claude run against the isolated
+   * config dir has no login. Seeding `.credentials.json` restores auth without
+   * committing the secret -- seed paths should be gitignored so the loop's
+   * `git add -A` never stages them and the scope guard never sees them.
+   */
+  readonly seed?: ReadonlyArray<WorktreeSeed>;
+}
+
+/** Copy each seed file into the worktree; best-effort (missing source skipped). */
+async function applySeed(root: string, seed: ReadonlyArray<WorktreeSeed>): Promise<void> {
+  for (const s of seed) {
+    const dest = path.join(root, s.to);
+    try {
+      await mkdir(path.dirname(dest), { recursive: true });
+      await copyFile(s.from, dest);
+    } catch {
+      // best-effort: a missing/unreadable source surfaces later as an auth error
+    }
+  }
 }
 
 /**
@@ -65,10 +97,13 @@ export async function openWorktree(
     ? ["-C", repo.root, "worktree", "add", "-B", branch, "--force", root, opts.from ?? "HEAD"]
     : ["-C", repo.root, "worktree", "add", "--force", root, branch];
   await exec("git", args);
+  const seed = opts.seed ?? [];
+  await applySeed(root, seed);
   return {
     root,
     configDir: path.join(root, repo.relConfig),
     branch,
+    seed,
     dispose: async () => {
       await exec("git", ["-C", repo.root, "worktree", "remove", "--force", root]).catch(
         () => undefined,
@@ -86,6 +121,9 @@ export async function openWorktree(
 export async function resetWorktree(wt: Worktree): Promise<void> {
   await exec("git", ["-C", wt.root, "reset", "--hard", "HEAD"]);
   await exec("git", ["-C", wt.root, "clean", "-fd"]);
+  // Re-apply seed: `clean -fd` removes non-ignored seeded files; gitignored ones
+  // survive, but re-copying is cheap and keeps the worktree usable either way.
+  await applySeed(wt.root, wt.seed);
 }
 
 /** Stage everything and commit on the worktree's branch; returns the new sha. */

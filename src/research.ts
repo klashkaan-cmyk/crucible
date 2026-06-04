@@ -20,7 +20,7 @@ import { appendFile } from "node:fs/promises";
 import path from "node:path";
 import { resolveConfigRepo } from "./bisect.js";
 import { expandFrontier, isSaturated, type SynthesizeFn } from "./frontier.js";
-import { openWorktree, commitWorktree, deleteBranch } from "./worktree.js";
+import { openWorktree, commitWorktree, deleteBranch, type WorktreeSeed } from "./worktree.js";
 import { evaluateCandidate, objectiveOf, type Best } from "./optimize.js";
 import { toBaseline } from "./baseline.js";
 import { median } from "./stats.js";
@@ -102,7 +102,20 @@ export interface ResearchOptions {
   readonly canaryDir?: string;
   /** Tolerance before a canary drop counts as a regression (default 0.05). */
   readonly canaryTolerance?: number;
+  /**
+   * Absolute path to a `.credentials.json` seeded into every worktree so headless
+   * claude can authenticate inside the isolated config dir. Needed when the config
+   * repo's credentials are untracked. Ignored under ANTHROPIC_API_KEY auth.
+   */
+  readonly credentialsPath?: string;
   readonly signal?: AbortSignal;
+}
+
+/** The credential seed (if any) to inject into each scoring worktree. */
+function credSeed(repo: Repo, opts: ResearchOptions): WorktreeSeed[] {
+  return opts.credentialsPath
+    ? [{ from: opts.credentialsPath, to: path.join(repo.relConfig, ".credentials.json") }]
+    : [];
 }
 
 export interface RoundRecord {
@@ -325,7 +338,7 @@ export async function research(opts: ResearchOptions): Promise<ResearchSummary> 
       const idea = fresh[i]!;
       const parent = beam[idea.parentBeam] ?? beam[0]!;
       const branch = `research/${opts.runId}/r${round}-c${i}`;
-      const wt = await openWorktree(repo, branch, { reset: true, from: parent.branch });
+      const wt = await openWorktree(repo, branch, { reset: true, from: parent.branch, seed: credSeed(repo, opts) });
       try {
         const ev = await evaluateCandidate({
           wt,
@@ -466,7 +479,7 @@ async function scoreBranch(
   reset: boolean,
 ): Promise<{ best: Best; costUsd: number; noveltyHash: string }> {
   const fit = opts.program.fitness;
-  const wt = await openWorktree(repo, branch, reset ? { reset: true } : { reset: false });
+  const wt = await openWorktree(repo, branch, { ...(reset ? { reset: true } : { reset: false }), seed: credSeed(repo, opts) });
   try {
     const train = await opts.score({
       configDir: wt.configDir, scenarioDir: fit.suite, k: fit.k_confirm, kind: "confirm", iter: 0,
@@ -499,7 +512,7 @@ async function scoreObjectiveAt(
   scenarioDir: string,
   opts: ResearchOptions,
 ): Promise<{ objective: number; costUsd: number }> {
-  const wt = await openWorktree(repo, branch, { reset: false });
+  const wt = await openWorktree(repo, branch, { reset: false, seed: credSeed(repo, opts) });
   try {
     const res = await opts.score({
       configDir: wt.configDir, scenarioDir, k: opts.program.fitness.k_confirm, kind: "confirm", iter: 0,
