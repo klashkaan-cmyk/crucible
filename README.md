@@ -3,9 +3,9 @@
 </p>
 
 
-**Regression CI for Claude Code configs.** Treat your `.claude/` directory -- skills, subagents, hooks, and `CLAUDE.md` -- as code under test. Define behavioral scenarios, run them N times on every change, and gate merges when quality regresses.
+**Regression CI -- and autonomous self-improvement -- for Claude Code configs.** Treat your `.claude/` directory -- skills, subagents, hooks, and `CLAUDE.md` -- as code under test. Run behavioral scenarios N times on every change to **catch regressions**, then let Crucible **improve the config for you** against the same variance-aware, safety-gated oracle. Every win lands as a PR you review -- nothing auto-merges.
 
-> You write a text file, hand it to an agent, and hope for the best. Crucible gives you a signal.
+> You write a text file, hand it to an agent, and hope for the best. Crucible gives you a signal -- then climbs the gradient.
 
 [![license](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
 [![node](https://img.shields.io/badge/node-%3E%3D20-green)](#requirements)
@@ -16,6 +16,13 @@
 <p align="center">
   <img src="https://raw.githubusercontent.com/klashkaan-cmyk/crucible/main/assets/demo.gif" alt="Crucible demo" width="760">
 </p>
+
+## Highlights
+
+- **Measure, don't guess.** `pass@k` / `pass^k` across run-to-run variance, **real `$` cost** (`total_cost_usd`), deterministic **and** LLM-judge assertions, baselines, transcript diffs, and `bisect` to the offending commit.
+- **Gate merges.** Non-zero exit + JUnit when a pass-rate or cost gate fails -- drops into CI like any other test.
+- **Improve automatically.** `crucible optimize` hill-climbs your config against a `PROGRAM.md` fitness contract; `crucible research` runs open-ended autoresearch -- hypothesis generation, a beam of config lineages, and a self-growing eval. Both are safety-gated and **open a PR, never auto-merge**.
+- **Safe by construction.** Everything runs in throwaway git worktrees; your real `~/.claude` is never touched.
 
 ## Why
 
@@ -40,6 +47,20 @@ For each scenario, Crucible:
 4. **Asserts** -- deterministic checks against the workdir and the capture log.
 5. **Repeats k times** -- because headless mode has no seed; reports `pass@k`, `pass^k`, variance, and flags flaky scenarios.
 6. **Gates** -- exits non-zero when a scenario's pass-rate or cost gate fails, so it blocks a PR like any other test. Emits JUnit XML.
+
+## Self-improvement: `optimize` & `research`
+
+The same oracle that *catches* regressions can *drive* improvement. You write a `PROGRAM.md` -- a short contract stating the objective, the mutable surface (a glob allowlist), and the accept gate (significance, no-regression, safety, cost). Then:
+
+```
+crucible optimize --config .claude --program PROGRAM.md   # gated hill-climb
+crucible research --config .claude --program PROGRAM.md   # open-ended autoresearch
+```
+
+- **optimize** -- a tool-restricted editor proposes one focused change at a time inside a throwaway worktree. Each candidate is screened cheaply, then confirmed at higher `k` with a two-proportion significance test, and accepted only if it beats the current best *and* never regresses a safety scenario. Accepted candidates commit to a branch.
+- **research** -- a beam of config lineages that explores instead of greedily hill-climbing: an LLM ideator generates hypotheses, the frontier grows its own eval scenarios, and a frozen **canary** suite halts the run if it starts overfitting that grown eval.
+
+Both **open a PR for you to review and never merge on their own** -- a self-editing loop should never be able to ship itself. CI wiring lives in [`.github/workflows`](./.github/workflows) (`optimize` on manual dispatch, `research` on a weekly cron), both budget-capped.
 
 ## Why not just ask an LLM?
 
