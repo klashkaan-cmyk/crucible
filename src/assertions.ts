@@ -172,24 +172,26 @@ async function checkJudge(
   const kind = `judge:${rubric.slice(0, 40)}`;
   let score = 0;
   let reason = "";
+  let costUsd = 0;
   try {
     const verdict = await runJudge(rubric, run, { claudeBin: opts.claudeBin, model: opts.judgeModel });
     score = verdict.score;
     reason = verdict.reason;
+    costUsd = verdict.costUsd ?? 0;
   } catch (err) {
     reason = (err as Error).message.slice(0, 120);
   }
 
   if (minScore === undefined) {
     const note = score ? `score ${score}/5${reason ? ` - ${reason}` : ""}` : `unscored (${reason})`;
-    return { kind, status: "pass", message: `(soft) ${note}` };
+    return { kind, status: "pass", message: `(soft) ${note}`, costUsd };
   }
   if (!score) {
-    return { kind, status: "fail", message: `judge could not score (${reason}); required >= ${minScore}` };
+    return { kind, status: "fail", message: `judge could not score (${reason}); required >= ${minScore}`, costUsd };
   }
   return score >= minScore
-    ? { kind, status: "pass", message: `score ${score}/5 >= ${minScore}${reason ? ` - ${reason}` : ""}` }
-    : { kind, status: "fail", message: `score ${score}/5 < ${minScore}${reason ? ` - ${reason}` : ""}` };
+    ? { kind, status: "pass", message: `score ${score}/5 >= ${minScore}${reason ? ` - ${reason}` : ""}`, costUsd }
+    : { kind, status: "fail", message: `score ${score}/5 < ${minScore}${reason ? ` - ${reason}` : ""}`, costUsd };
 }
 
 async function checkFileAbsent(rel: string, workdir: string): Promise<AssertionResult> {

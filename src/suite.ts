@@ -109,11 +109,12 @@ async function runOneTrial(
     } else if (!opts.keepWorkdirs) {
       await rm(run.workdir, { recursive: true, force: true });
     }
+    const judgeCost = assertions.reduce((s, a) => s + (a.costUsd ?? 0), 0);
     return {
       index,
       assertions,
       passed,
-      costUsd: run.headless.totalCostUsd,
+      costUsd: run.headless.totalCostUsd + judgeCost,
       durationMs: run.headless.durationMs,
     };
   } catch (err) {

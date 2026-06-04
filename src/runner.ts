@@ -160,6 +160,16 @@ export interface HeadlessTextOptions {
  * so it cannot read the trial workdir except via what we put in the prompt.
  */
 export async function runHeadlessText(opts: HeadlessTextOptions): Promise<string> {
+  return (await runHeadlessJson(opts)).text;
+}
+
+/**
+ * Like runHeadlessText but also returns the run's real cost, so callers (the
+ * judge) can fold a meta-agent call into the trial's cost accounting.
+ */
+export async function runHeadlessJson(
+  opts: HeadlessTextOptions,
+): Promise<{ text: string; costUsd: number }> {
   const workdir = await mkdtemp(path.join(tmpdir(), "crucible-judge-"));
   const bin = opts.claudeBin ?? "claude";
   const args = ["-p", opts.prompt, "--output-format", "json", "--max-turns", String(opts.maxTurns ?? 1)];
@@ -187,7 +197,8 @@ export async function runHeadlessText(opts: HeadlessTextOptions): Promise<string
         resolve(out);
       });
     });
-    return parseHeadless(stdout).result;
+    const headless = parseHeadless(stdout);
+    return { text: headless.result, costUsd: headless.totalCostUsd };
   } finally {
     await rm(workdir, { recursive: true, force: true });
   }

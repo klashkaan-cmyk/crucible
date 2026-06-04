@@ -12,6 +12,8 @@ export interface AssertionResult {
   readonly kind: string;
   readonly status: AssertionStatus;
   readonly message: string;
+  /** Real model cost incurred by this assertion (judge); summed into trial cost. */
+  readonly costUsd?: number;
 }
 
 /** The structured envelope returned by `claude -p --output-format json`. */

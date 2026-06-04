@@ -11,7 +11,7 @@
 
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import { runHeadlessText } from "./runner.js";
+import { runHeadlessJson } from "./runner.js";
 import type { TrialRun } from "./types.js";
 
 export interface JudgeOptions {
@@ -23,6 +23,8 @@ export interface JudgeVerdict {
   /** 1-5 when the judge answered; 0 means the judge could not be parsed. */
   readonly score: number;
   readonly reason: string;
+  /** Real cost of the judge's own model call (set by runJudge, not parseVerdict). */
+  readonly costUsd?: number;
 }
 
 const MAX_FILE_BYTES = 4000;
@@ -37,13 +39,13 @@ export async function runJudge(
 ): Promise<JudgeVerdict> {
   const snapshot = await snapshotWorkdir(run.workdir);
   const prompt = buildPrompt(rubric, run.headless.result, snapshot);
-  const text = await runHeadlessText({
+  const { text, costUsd } = await runHeadlessJson({
     prompt,
     claudeBin: opts.claudeBin,
     model: opts.model,
     maxTurns: 1,
   });
-  return parseVerdict(text);
+  return { ...parseVerdict(text), costUsd };
 }
 
 export function buildPrompt(rubric: string, agentResult: string, snapshot: string): string {
