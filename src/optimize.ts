@@ -16,9 +16,7 @@
  * See docs/optimize-spec.md.
  */
 
-import { execFile } from "node:child_process";
 import { appendFile } from "node:fs/promises";
-import { promisify } from "node:util";
 import { resolveConfigRepo } from "./bisect.js";
 import {
   diffAgainstBaseline,
@@ -35,6 +33,7 @@ import {
   gitChangedFiles,
   openWorktree,
   resetWorktree,
+  commitWorktree,
   withinAllowlist,
   type Worktree,
 } from "./worktree.js";
@@ -42,7 +41,6 @@ import { lintConfig, countByLevel } from "./lint.js";
 import type { Program } from "./program.js";
 import type { ScenarioResult } from "./types.js";
 
-const exec = promisify(execFile);
 const EPS = 1e-9;
 
 // --- injected seams ---------------------------------------------------------
@@ -52,6 +50,8 @@ export interface EditorContext {
   readonly iter: number;
   /** The current best's train scoring -- the source of the failures digest. */
   readonly lastSuite: ReadonlyArray<ScenarioResult>;
+  /** A research hypothesis to apply, when driven by the research Ideator. */
+  readonly hypothesis?: string;
 }
 
 export interface EditorResult {
@@ -375,6 +375,8 @@ export interface EvaluateContext {
   readonly editor: EditorFn;
   readonly score: ScoreFn;
   readonly iter: number;
+  /** A research hypothesis passed through to the editor, when present. */
+  readonly hypothesis?: string;
 }
 
 /**
@@ -391,7 +393,12 @@ export async function evaluateCandidate(ctx: EvaluateContext): Promise<Candidate
   const reject = (reason: RejectReason, detail: string): Verdict => ({ kind: "reject", reason, detail });
 
   await resetWorktree(wt);
-  const edit = await editor(wt, { program, iter, lastSuite: best.trainResults });
+  const edit = await editor(wt, {
+    program,
+    iter,
+    lastSuite: best.trainResults,
+    ...(ctx.hypothesis ? { hypothesis: ctx.hypothesis } : {}),
+  });
   let cost = edit.costUsd;
   const scope = await gitChangedFiles(wt);
   const base = { changedFiles: scope, editorMessage: edit.message };
@@ -613,13 +620,6 @@ async function scoreBaseline(
     },
     costUsd,
   };
-}
-
-async function commitWorktree(wt: Worktree, message: string): Promise<string> {
-  await exec("git", ["-C", wt.root, "add", "-A"]);
-  await exec("git", ["-C", wt.root, "commit", "-q", "-m", message]);
-  const { stdout } = await exec("git", ["-C", wt.root, "rev-parse", "HEAD"]);
-  return stdout.trim();
 }
 
 function initRejectCounts(): Record<RejectReason, number> {

@@ -42,6 +42,12 @@ export interface OpenWorktreeOptions {
    * accepted-candidate lineage already on that branch.
    */
   readonly reset?: boolean;
+  /**
+   * Start point for the created/reset branch (default HEAD). Used by research to
+   * fork a child lineage off a parent beam member's branch tip. Ignored when
+   * reset is false.
+   */
+  readonly from?: string;
 }
 
 /**
@@ -56,7 +62,7 @@ export async function openWorktree(
 ): Promise<Worktree> {
   const root = await mkdtemp(path.join(tmpdir(), "crucible-opt-"));
   const args = (opts.reset ?? true)
-    ? ["-C", repo.root, "worktree", "add", "-B", branch, "--force", root, "HEAD"]
+    ? ["-C", repo.root, "worktree", "add", "-B", branch, "--force", root, opts.from ?? "HEAD"]
     : ["-C", repo.root, "worktree", "add", "--force", root, branch];
   await exec("git", args);
   return {
@@ -80,6 +86,19 @@ export async function openWorktree(
 export async function resetWorktree(wt: Worktree): Promise<void> {
   await exec("git", ["-C", wt.root, "reset", "--hard", "HEAD"]);
   await exec("git", ["-C", wt.root, "clean", "-fd"]);
+}
+
+/** Stage everything and commit on the worktree's branch; returns the new sha. */
+export async function commitWorktree(wt: Worktree, message: string): Promise<string> {
+  await exec("git", ["-C", wt.root, "add", "-A"]);
+  await exec("git", ["-C", wt.root, "commit", "-q", "-m", message]);
+  const { stdout } = await exec("git", ["-C", wt.root, "rev-parse", "HEAD"]);
+  return stdout.trim();
+}
+
+/** Delete a branch ref (prunes rejected research forks). Never throws. */
+export async function deleteBranch(repo: ConfigRepo, branch: string): Promise<void> {
+  await exec("git", ["-C", repo.root, "branch", "-D", branch]).catch(() => undefined);
 }
 
 /**
