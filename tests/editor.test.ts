@@ -96,7 +96,7 @@ describe("editorClaudeArgs", () => {
     const args = editorClaudeArgs("PROMPT", 25);
     expect(args[args.indexOf("--allowedTools") + 1]).toBe("Edit,Write,Read");
     expect(args[args.indexOf("--disallowedTools") + 1]).toBe("Bash");
-    expect(args[args.indexOf("--permission-mode") + 1]).toBe("acceptEdits");
+    expect(args[args.indexOf("--permission-mode") + 1]).toBe("bypassPermissions");
     expect(args[args.indexOf("--max-turns") + 1]).toBe("25");
     // Bash must never appear in the allowed set
     expect(args[args.indexOf("--allowedTools") + 1]).not.toMatch(/Bash/);

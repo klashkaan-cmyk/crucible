@@ -85,8 +85,12 @@ export function editorClaudeArgs(prompt: string, maxTurns: number): string[] {
     "json",
     "--max-turns",
     String(maxTurns),
+    // bypassPermissions, not acceptEdits: acceptEdits does NOT auto-approve edits
+    // to files under `.claude/` (Claude Code treats editing its own config/agents
+    // as privileged), so the editor would silently no-op on every config file.
+    // Safe here -- the editor runs with Bash disallowed inside a throwaway worktree.
     "--permission-mode",
-    "acceptEdits",
+    "bypassPermissions",
     "--allowedTools",
     "Edit,Write,Read",
     "--disallowedTools",
