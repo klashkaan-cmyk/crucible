@@ -28,6 +28,15 @@ import {
 import { acceptTerms, ConsentDeclined, ensureConsent, TERMS_SUMMARY } from "./consent.js";
 import { markdownSummary, printConsole, printRegressions, resultsToJson, writeJunit } from "./report.js";
 import { configFingerprint, discoverScenarios, runSuite, type SuiteOptions } from "./suite.js";
+import {
+  optimize,
+  runSuiteScorer,
+  withRetry,
+  optimizeMarkdown,
+  type OptimizeOptions,
+} from "./optimize.js";
+import { loadProgram } from "./program.js";
+import { makeEditor, bootstrapSuite } from "./editor.js";
 import { countByLevel, lintConfig } from "./lint.js";
 import {
   bisectFirstBad,
@@ -168,6 +177,28 @@ program
   .option("--json", "output findings as JSON", false)
   .action(lintCommand);
 
+program
+  .command("optimize")
+  .description("Autonomously improve a config against a PROGRAM.md (commits candidates to a branch; never merges)")
+  .option("-c, --config <dir>", "config dir under test", ".claude")
+  .option("-p, --program <file>", "the PROGRAM.md driving the run", "PROGRAM.md")
+  .option("--budget-usd <n>", "hard ceiling on total spend", "10")
+  .option("--max-iters <n>", "max candidate iterations", "50")
+  .option("--plateau <n>", "stop after N consecutive rejects", "8")
+  .option("--branch <name>", "branch for accepted candidates (default optimize/<date>)")
+  .option("--editor-model <model>", "model the editor runs as")
+  .option("--judge-model <model>", "model for LLM-judge assertions")
+  .option("--reference-config <dir>", "frozen config the editor runs on (default: --config)")
+  .option("--concurrency <n>", "parallel trials (default 1)")
+  .option("--claude-bin <path>", "path to the claude binary", "claude")
+  .option("--ledger <file>", "append a JSONL run ledger here", ".crucible/optimize.jsonl")
+  .option("--remeasure-every <n>", "re-score the best every N accepted candidates")
+  .option("--max-turns <n>", "editor turn cap", "40")
+  .option("--resume", "resume the existing branch instead of resetting it", false)
+  .option("--dry-run", "evaluate would-accepts but never commit", false)
+  .option("--pr-comment", "post/update a sticky results comment on the PR (CI)", false)
+  .action(optimizeCommand);
+
 program.parseAsync(process.argv);
 
 function suiteOptions(opts: {
@@ -297,6 +328,125 @@ async function runCommand(opts: {
 
   const failed = gatesFailed > 0 || (opts.failOnRegression && regressions.length > 0);
   process.exit(failed ? 1 : 0);
+}
+
+async function optimizeCommand(opts: {
+  config: string;
+  program: string;
+  budgetUsd: string;
+  maxIters: string;
+  plateau: string;
+  branch?: string;
+  editorModel?: string;
+  judgeModel?: string;
+  referenceConfig?: string;
+  concurrency?: string;
+  claudeBin: string;
+  ledger: string;
+  remeasureEvery?: string;
+  maxTurns: string;
+  resume: boolean;
+  dryRun: boolean;
+  prComment: boolean;
+}): Promise<void> {
+  let telemetry;
+  try {
+    telemetry = await ensureConsent();
+  } catch (err) {
+    if (err instanceof ConsentDeclined) {
+      console.error(pc.yellow("\nTerms not accepted -- nothing was run."));
+      process.exit(3);
+    }
+    throw err;
+  }
+  await maybeShowNotice(telemetry);
+
+  const program = await loadProgram(path.resolve(opts.program));
+  const configDir = path.resolve(opts.config);
+  const referenceConfig = path.resolve(opts.referenceConfig ?? opts.config);
+
+  const suiteDir = path.resolve(program.fitness.suite);
+  const written = await bootstrapSuite(configDir, suiteDir);
+  if (written > 0) {
+    console.error(pc.dim(`bootstrapped ${written} starter scenario(s) into ${suiteDir} -- review them`));
+  }
+
+  const branch = opts.branch ?? `optimize/${new Date().toISOString().slice(0, 10)}`;
+  const ac = new AbortController();
+  const onSignal = (): void => {
+    console.error(pc.yellow("\nsignal received -- stopping after the current step..."));
+    ac.abort();
+  };
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
+
+  const editor = makeEditor({
+    claudeBin: opts.claudeBin,
+    referenceConfigDir: referenceConfig,
+    maxTurns: parseInt(opts.maxTurns, 10) || 40,
+    ...(opts.editorModel ? { model: opts.editorModel } : {}),
+  });
+  const score = withRetry(
+    runSuiteScorer({
+      claudeBin: opts.claudeBin,
+      ...(opts.judgeModel ? { judgeModel: opts.judgeModel } : {}),
+      ...(opts.concurrency ? { concurrency: Math.max(1, parseInt(opts.concurrency, 10) || 1) } : {}),
+    }),
+    {
+      signal: ac.signal,
+      onWait: (kind, attempt, ms) =>
+        console.error(pc.yellow(`${kind}: backing off ${ms}ms (attempt ${attempt + 1})`)),
+    },
+  );
+
+  const ledgerPath = path.resolve(opts.ledger);
+  await mkdir(path.dirname(ledgerPath), { recursive: true }).catch(() => undefined);
+
+  const optOpts: OptimizeOptions = {
+    configDir,
+    program,
+    editor,
+    score,
+    branch,
+    budgetUsd: parseFloat(opts.budgetUsd) || 10,
+    maxIters: parseInt(opts.maxIters, 10) || 50,
+    plateauIters: parseInt(opts.plateau, 10) || 8,
+    ledgerPath,
+    signal: ac.signal,
+    resume: opts.resume,
+    dryRun: opts.dryRun,
+    ...(opts.remeasureEvery ? { remeasureEvery: parseInt(opts.remeasureEvery, 10) } : {}),
+  };
+
+  console.error(
+    pc.dim(`optimize: suite ${program.fitness.suite} on ${configDir} -> ${branch}${opts.dryRun ? " [dry-run]" : ""}\n`),
+  );
+
+  const summary = await optimize(optOpts);
+
+  console.log("\n" + optimizeMarkdown(summary).split("\n").slice(1).join("\n"));
+
+  if (opts.prComment && !opts.dryRun) {
+    const ctx = prContextFromEnv();
+    if (!ctx) {
+      console.error(pc.yellow("--pr-comment: no PR context (need GITHUB_TOKEN, GITHUB_REPOSITORY, a PR event); skipping."));
+    } else {
+      try {
+        const res = await upsertPrComment(ctx, optimizeMarkdown(summary));
+        console.error(pc.dim(`PR comment ${res.action} (#${res.id})`));
+      } catch (err) {
+        console.error(pc.yellow(`--pr-comment failed: ${(err as Error).message}`));
+      }
+    }
+  }
+
+  await track(telemetry, {
+    version: VERSION,
+    event: "optimize",
+    props: { accepted: summary.accepted, iters: summary.iters },
+  });
+
+  process.exit(summary.accepted > 0 ? 0 : 1);
 }
 
 async function watchCommand(opts: {

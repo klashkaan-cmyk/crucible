@@ -204,6 +204,11 @@ export interface OptimizeOptions {
    * resetting it, so the accepted-candidate lineage and the ledger continue.
    */
   readonly resume?: boolean;
+  /**
+   * Evaluate and report would-accepts but never commit or advance the best, so
+   * history is untouched. Each candidate is judged against the same baseline.
+   */
+  readonly dryRun?: boolean;
   readonly signal?: AbortSignal;
 }
 
@@ -350,6 +355,31 @@ export function decide(
   return { kind: "accept", objective, gain };
 }
 
+/**
+ * A markdown summary of a run for the PR review gate. Pure. Crucible NEVER merges
+ * -- this is the artifact a human reviews before merging the branch themselves.
+ */
+export function optimizeMarkdown(summary: OptimizeSummary): string {
+  const delta = summary.finalObjective - summary.baselineObjective;
+  const rej =
+    ALL_REJECT_REASONS.filter((r) => summary.rejected[r] > 0)
+      .map((r) => `${r}: ${summary.rejected[r]}`)
+      .join(", ") || "none";
+  return [
+    "<!-- crucible-optimize -->",
+    `**Crucible optimize** — branch \`${summary.branch}\``,
+    "",
+    `- objective: ${summary.baselineObjective.toFixed(3)} → ${summary.finalObjective.toFixed(3)} (${delta >= 0 ? "+" : ""}${delta.toFixed(3)})`,
+    `- accepted: ${summary.accepted} / ${summary.iters} iteration(s)`,
+    `- rejected: ${rej}`,
+    `- cost: ~$${summary.costUsd.toFixed(4)}`,
+    "",
+    summary.commits.length > 0
+      ? `Lineage: ${summary.commits.length} commit(s) on \`${summary.branch}\`. Review and merge it yourself — Crucible never merges for you.`
+      : "No candidate was accepted.",
+  ].join("\n");
+}
+
 // --- the loop ---------------------------------------------------------------
 
 export async function optimize(opts: OptimizeOptions): Promise<OptimizeSummary> {
@@ -479,6 +509,13 @@ export async function optimize(opts: OptimizeOptions): Promise<OptimizeSummary> 
         }
 
         // 6. KEEP -- commit onto the branch, advance best, reset the plateau.
+        if (opts.dryRun) {
+          // Report a would-accept; never commit or advance the best.
+          accepted += 1;
+          plateau = 0;
+          await record(verdict);
+          continue;
+        }
         const commit = await commitWorktree(wt, `optimize: iter ${iter} (+${verdict.gain.toFixed(3)})`);
         commits.push(commit);
         best = {

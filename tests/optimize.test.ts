@@ -9,6 +9,7 @@ import {
   optimize,
   objectiveOf,
   significantGain,
+  optimizeMarkdown,
   withRetry,
   classifyInfra,
   InfraError,
@@ -16,6 +17,7 @@ import {
   type ScoreFn,
   type ScoreRequest,
   type OptimizeOptions,
+  type OptimizeSummary,
 } from "../src/optimize.js";
 import type { ScenarioResult, TrialResult } from "../src/types.js";
 
@@ -328,6 +330,41 @@ describe("optimize loop", () => {
     // baseline + screen + confirm + one re-measure of the accepted tip
     expect(trainCalls).toBe(4);
     expect(summary.finalObjective).toBeGreaterThan(summary.baselineObjective);
+  });
+
+  it("dry-run reports would-accepts but never commits", async () => {
+    const dir = await makeRepo();
+    const program = await loadProg();
+    const score = scorer((d, k, iter) => {
+      if (d === "safety") return [result("sec", k, k)];
+      if (d === "holdout") return [result("h", 6, k)];
+      return [result("s", iter === 0 ? 6 : 11, k)];
+    });
+    const summary = await optimize(baseOpts(dir, program, editInScope, score, { dryRun: true }));
+    expect(summary.accepted).toBe(1); // would-accept
+    expect(summary.commits).toHaveLength(0); // but nothing committed
+    expect(await branchCommitCount(dir, "optimize/test")).toBe(1); // branch untouched
+  });
+});
+
+describe("optimizeMarkdown", () => {
+  it("renders the objective delta and a never-merge note", () => {
+    const summary = {
+      branch: "optimize/x",
+      iters: 3,
+      accepted: 1,
+      rejected: { "no-op": 2 } as OptimizeSummary["rejected"],
+      baselineObjective: 0.5,
+      finalObjective: 0.8,
+      costUsd: 1.2345,
+      commits: ["abc123"],
+      records: [],
+    } as OptimizeSummary;
+    const md = optimizeMarkdown(summary);
+    expect(md).toMatch(/optimize\/x/);
+    expect(md).toMatch(/0\.500 → 0\.800 \(\+0\.300\)/);
+    expect(md).toMatch(/never merges/);
+    expect(md).toMatch(/no-op: 2/);
   });
 });
 
