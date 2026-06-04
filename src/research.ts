@@ -23,11 +23,13 @@ import { evaluateCandidate, objectiveOf, type Best } from "./optimize.js";
 import { toBaseline } from "./baseline.js";
 import { median } from "./stats.js";
 import { configFingerprint } from "./suite.js";
-import type { EditorFn, ScoreFn } from "./optimize.js";
+import type { EditorFn, ScoreFn, Verdict } from "./optimize.js";
 import type { Program } from "./program.js";
 import type { ScenarioResult } from "./types.js";
 
 // --- types ------------------------------------------------------------------
+
+export type HypothesisStatus = "proposed" | "tried" | "held" | "failed" | "duplicate";
 
 export interface Hypothesis {
   readonly id: string;
@@ -35,12 +37,21 @@ export interface Hypothesis {
   readonly parentBeam: number;
   /** The idea, handed to the editor verbatim. */
   readonly rationale: string;
+  readonly round?: number;
+  readonly status?: HypothesisStatus;
+  /** The Reflector's one-line note on why it held or failed. */
+  readonly learning?: string;
 }
 
-/** Propose hypotheses for the round. Stub in this step; LLM-backed later. */
+/**
+ * Propose hypotheses for the round, given the current beam and the backlog of
+ * everything tried so far (so it does not re-propose dead ends). Stub in tests;
+ * LLM-backed via makeIdeator.
+ */
 export type IdeatorFn = (
   beam: ReadonlyArray<BeamMember>,
   round: number,
+  backlog: ReadonlyArray<Hypothesis>,
 ) => Promise<Hypothesis[]>;
 
 export interface BeamMember {
@@ -66,16 +77,99 @@ export interface ResearchOptions {
   readonly runId: string;
   readonly budgetUsd: number;
   readonly ledgerPath?: string;
+  /** Append the research journal (markdown) here. */
+  readonly journalPath?: string;
+  /** Append every tried/duplicate hypothesis as JSONL here (the idea backlog). */
+  readonly ideasPath?: string;
+  /** Jaccard similarity at/above which a new idea is a duplicate (default 0.8). */
+  readonly noveltyThreshold?: number;
   readonly signal?: AbortSignal;
 }
 
 export interface RoundRecord {
   readonly round: number;
   readonly hypotheses: number;
+  readonly deduped: number;
   readonly accepted: number;
   readonly beam: ReadonlyArray<{ branch: string; objective: number }>;
   readonly bestObjective: number;
   readonly cumCostUsd: number;
+}
+
+// --- novelty guard + reflector (pure) ---------------------------------------
+
+function tokenize(s: string): Set<string> {
+  return new Set(s.toLowerCase().match(/[a-z0-9]+/g) ?? []);
+}
+
+function jaccard(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 && b.size === 0) return 1;
+  let inter = 0;
+  for (const x of a) if (b.has(x)) inter += 1;
+  const union = a.size + b.size - inter;
+  return union === 0 ? 0 : inter / union;
+}
+
+/**
+ * Novelty guard: drop hypotheses too lexically similar to anything in the backlog
+ * (or earlier in the same batch). Prevents the Ideator from re-proposing the same
+ * idea forever -- the research analog of a thrash loop. Pure.
+ */
+export function dropDuplicates(
+  proposed: ReadonlyArray<Hypothesis>,
+  backlog: ReadonlyArray<Hypothesis>,
+  threshold = 0.8,
+): { fresh: Hypothesis[]; duplicates: Hypothesis[] } {
+  const fresh: Hypothesis[] = [];
+  const duplicates: Hypothesis[] = [];
+  const seen = backlog.map((h) => tokenize(h.rationale));
+  for (const h of proposed) {
+    const t = tokenize(h.rationale);
+    if (seen.some((s) => jaccard(t, s) >= threshold)) {
+      duplicates.push({ ...h, status: "duplicate" });
+    } else {
+      fresh.push(h);
+      seen.push(t);
+    }
+  }
+  return { fresh, duplicates };
+}
+
+export interface TriedHypothesis {
+  readonly hypothesis: Hypothesis;
+  readonly verdict: Verdict;
+}
+
+export interface Reflection {
+  /** The tried hypotheses with held/failed status + a one-line learning. */
+  readonly reflected: Hypothesis[];
+  /** A markdown block summarizing the round for the journal. */
+  readonly journal: string;
+}
+
+/**
+ * Reflector: turn a round's outcomes into held/failed learnings + a journal
+ * block, which feed back into the Ideator's backlog so research compounds instead
+ * of thrashing. Deterministic from the verdicts (no model call needed). Pure.
+ */
+export function reflect(
+  round: number,
+  tried: ReadonlyArray<TriedHypothesis>,
+  bestObjective: number,
+): Reflection {
+  const reflected: Hypothesis[] = tried.map(({ hypothesis, verdict }) =>
+    verdict.kind === "accept"
+      ? { ...hypothesis, round, status: "held", learning: `held: objective +${verdict.gain.toFixed(3)}` }
+      : { ...hypothesis, round, status: "failed", learning: `failed: ${verdict.reason} (${verdict.detail})` },
+  );
+  const held = reflected.filter((h) => h.status === "held").length;
+  const lines = [
+    `## Round ${round} — best objective ${bestObjective.toFixed(3)} (${held}/${tried.length} held)`,
+    "",
+    ...reflected.map((h) => `- [${h.status}] ${h.rationale} — ${h.learning}`),
+    "",
+  ];
+  return { reflected, journal: lines.join("\n") };
 }
 
 export interface ResearchSummary {
@@ -153,17 +247,20 @@ export async function research(opts: ResearchOptions): Promise<ResearchSummary> 
   cum += seed.costUsd;
   let beam: BeamMember[] = [seed.member];
   const baselineObjective = seed.member.objective;
+  const backlog: Hypothesis[] = [];
 
   for (let round = 1; round <= opts.maxRounds; round++) {
     if (opts.signal?.aborted) break;
     if (cum >= opts.budgetUsd) break;
 
-    const ideas = await opts.ideator(beam, round);
+    const proposed = await opts.ideator(beam, round, backlog);
+    const { fresh, duplicates } = dropDuplicates(proposed, backlog, opts.noveltyThreshold ?? 0.8);
     const candidates: BeamMember[] = [];
+    const tried: TriedHypothesis[] = [];
     let accepted = 0;
 
-    for (let i = 0; i < ideas.length; i++) {
-      const idea = ideas[i]!;
+    for (let i = 0; i < fresh.length; i++) {
+      const idea = fresh[i]!;
       const parent = beam[idea.parentBeam] ?? beam[0]!;
       const branch = `research/${opts.runId}/r${round}-c${i}`;
       const wt = await openWorktree(repo, branch, { reset: true, from: parent.branch });
@@ -178,6 +275,7 @@ export async function research(opts: ResearchOptions): Promise<ResearchSummary> 
           hypothesis: idea.rationale,
         });
         cum += ev.costUsd;
+        tried.push({ hypothesis: idea, verdict: ev.verdict });
         if (ev.verdict.kind === "accept") {
           const commit = await commitWorktree(wt, `research: r${round} c${i} (+${ev.verdict.gain.toFixed(3)})`);
           const train = ev.train ?? [];
@@ -204,12 +302,25 @@ export async function research(opts: ResearchOptions): Promise<ResearchSummary> 
     }
 
     beam = selectBeam([...beam, ...candidates], opts.beamWidth, opts.diversityFloor);
+    const bestObjective = Math.max(...beam.map((m) => m.objective));
+
+    // Reflect: record learnings, feed the backlog, append the journal.
+    const { reflected, journal } = reflect(round, tried, bestObjective);
+    backlog.push(...reflected, ...duplicates);
+    if (opts.journalPath) await appendFile(opts.journalPath, journal + "\n");
+    if (opts.ideasPath) {
+      for (const h of [...reflected, ...duplicates]) {
+        await appendFile(opts.ideasPath, JSON.stringify(h) + "\n");
+      }
+    }
+
     const rec: RoundRecord = {
       round,
-      hypotheses: ideas.length,
+      hypotheses: proposed.length,
+      deduped: duplicates.length,
       accepted,
       beam: beam.map((m) => ({ branch: m.branch, objective: m.objective })),
-      bestObjective: Math.max(...beam.map((m) => m.objective)),
+      bestObjective,
       cumCostUsd: cum,
     };
     records.push(rec);

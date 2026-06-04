@@ -9,8 +9,11 @@ import {
   research,
   selectBeam,
   noveltyDistance,
+  dropDuplicates,
+  reflect,
   type BeamMember,
   type IdeatorFn,
+  type Hypothesis,
 } from "../src/research.js";
 import type { EditorFn, ScoreFn, Best } from "../src/optimize.js";
 import type { ScenarioResult, TrialResult } from "../src/types.js";
@@ -58,6 +61,46 @@ describe("selectBeam", () => {
     expect(hashes).toContain("aaaa"); // the best is always kept
     expect(hashes).toContain("zzzz"); // the novel member takes the reserved slot
     expect(hashes).not.toContain("aaab");
+  });
+});
+
+// --- novelty guard + reflector ---------------------------------------------
+
+function hyp(rationale: string, parentBeam = 0): Hypothesis {
+  return { id: rationale.slice(0, 6), parentBeam, rationale };
+}
+
+describe("dropDuplicates", () => {
+  it("drops ideas too similar to the backlog and within the batch", () => {
+    const backlog = [hyp("tighten the security reviewer trigger phrase")];
+    const proposed = [
+      hyp("tighten the security reviewer trigger phrase"), // dup of backlog
+      hyp("add a brand new response caching layer"), // fresh
+      hyp("add a brand new response caching layer"), // intra-batch dup
+    ];
+    const { fresh, duplicates } = dropDuplicates(proposed, backlog, 0.8);
+    expect(fresh).toHaveLength(1);
+    expect(fresh[0]!.rationale).toMatch(/caching/);
+    expect(duplicates).toHaveLength(2);
+    expect(duplicates.every((d) => d.status === "duplicate")).toBe(true);
+  });
+});
+
+describe("reflect", () => {
+  it("records held/failed learnings and a journal block", () => {
+    const r = reflect(
+      3,
+      [
+        { hypothesis: hyp("idea A"), verdict: { kind: "accept", objective: 0.8, gain: 0.3 } },
+        { hypothesis: hyp("idea B"), verdict: { kind: "reject", reason: "insufficient-gain", detail: "noise" } },
+      ],
+      0.8,
+    );
+    expect(r.reflected[0]).toMatchObject({ status: "held", round: 3 });
+    expect(r.reflected[1]).toMatchObject({ status: "failed" });
+    expect(r.journal).toMatch(/## Round 3/);
+    expect(r.journal).toMatch(/\[held\]/);
+    expect(r.journal).toMatch(/\[failed\]/);
   });
 });
 
@@ -161,6 +204,34 @@ describe("research loop", () => {
     // one ledger line per round
     const ledger = (await readFile(ledgerPath, "utf8")).trim().split("\n");
     expect(ledger).toHaveLength(2);
+  });
+
+  it("writes the research journal and the idea backlog", async () => {
+    const dir = await makeRepo();
+    const program = await loadProg();
+    const out = await mkdtemp(path.join(tmpdir(), "out-"));
+    const journalPath = path.join(out, "journal.md");
+    const ideasPath = path.join(out, "ideas.jsonl");
+
+    await research({
+      configDir: path.join(dir, ".claude"),
+      program,
+      editor: editFromIdea,
+      score,
+      ideator: twoIdeas,
+      beamWidth: 3,
+      maxRounds: 1,
+      diversityFloor: 0.05,
+      runId: "j",
+      budgetUsd: 1000,
+      journalPath,
+      ideasPath,
+    });
+
+    expect(await readFile(journalPath, "utf8")).toMatch(/## Round 1/);
+    const ideas = (await readFile(ideasPath, "utf8")).trim().split("\n");
+    expect(ideas.length).toBeGreaterThanOrEqual(1);
+    expect(JSON.parse(ideas[0]!)).toHaveProperty("status");
   });
 
   it("halts before any round when the budget is exhausted by the seed", async () => {

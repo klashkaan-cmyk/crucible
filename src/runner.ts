@@ -150,6 +150,8 @@ export interface HeadlessTextOptions {
   readonly model?: string;
   readonly maxTurns?: number;
   readonly timeoutMs?: number;
+  /** Pin the meta-agent (judge / ideator) to a frozen reference config. */
+  readonly configDir?: string;
 }
 
 /**
@@ -164,7 +166,10 @@ export async function runHeadlessText(opts: HeadlessTextOptions): Promise<string
   if (opts.model) args.push("--model", opts.model);
   try {
     const stdout = await new Promise<string>((resolve, reject) => {
-      const child = spawn(bin, args, { cwd: workdir, env: { ...process.env } });
+      const child = spawn(bin, args, {
+        cwd: workdir,
+        env: { ...process.env, ...(opts.configDir ? { CLAUDE_CONFIG_DIR: opts.configDir } : {}) },
+      });
       let out = "";
       let err = "";
       const timer = setTimeout(() => {
