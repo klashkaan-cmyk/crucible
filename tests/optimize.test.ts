@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { loadProgram, type Program } from "../src/program.js";
 import {
   optimize,
+  evaluateCandidate,
   objectiveOf,
   significantGain,
   optimizeMarkdown,
@@ -18,7 +19,11 @@ import {
   type ScoreRequest,
   type OptimizeOptions,
   type OptimizeSummary,
+  type Best,
 } from "../src/optimize.js";
+import { toBaseline } from "../src/baseline.js";
+import { resolveConfigRepo } from "../src/bisect.js";
+import { openWorktree } from "../src/worktree.js";
 import type { ScenarioResult, TrialResult } from "../src/types.js";
 
 const exec = promisify(execFile);
@@ -344,6 +349,62 @@ describe("optimize loop", () => {
     expect(summary.accepted).toBe(1); // would-accept
     expect(summary.commits).toHaveLength(0); // but nothing committed
     expect(await branchCommitCount(dir, "optimize/test")).toBe(1); // branch untouched
+  });
+});
+
+describe("evaluateCandidate", () => {
+  const PROGRAM_MIN = `## Objective
+o
+## Mutable surface
+allow:
+  - .claude/**
+## Fitness
+suite: train
+k_screen: 3
+k_confirm: 12
+accept:
+  min_objective_gain: 0.05
+`;
+  function bestFrom(train: ScenarioResult[]): Best {
+    return { objective: objectiveOf(train), cost: 0.01, baseline: toBaseline(train), trainResults: train };
+  }
+
+  it("scores and gates an accept WITHOUT committing", async () => {
+    const dir = await makeRepo();
+    const program = await loadProg(PROGRAM_MIN);
+    const repo = await resolveConfigRepo(path.join(dir, ".claude"));
+    const wt = await openWorktree(repo, "optimize/ec");
+    const score = scorer((_d, k) => [result("s", 11, k)]);
+    const ev = await evaluateCandidate({
+      wt,
+      best: bestFrom([result("s", 6, 12)]),
+      program,
+      editor: editInScope,
+      score,
+      iter: 1,
+    });
+    expect(ev.verdict.kind).toBe("accept");
+    expect(ev.train).toBeDefined();
+    // the seam never commits -- the branch ref stays at its initial commit
+    expect(await branchCommitCount(dir, "optimize/ec")).toBe(1);
+    await wt.dispose();
+  });
+
+  it("rejects an out-of-scope edit and reports the editor cost", async () => {
+    const dir = await makeRepo();
+    const program = await loadProg(PROGRAM_MIN);
+    const repo = await resolveConfigRepo(path.join(dir, ".claude"));
+    const wt = await openWorktree(repo, "optimize/ec2");
+    const ev = await evaluateCandidate({
+      wt,
+      best: bestFrom([result("s", 6, 12)]),
+      program,
+      editor: editOutOfScope,
+      score: scorer((_d, k) => [result("s", 12, k)]),
+      iter: 1,
+    });
+    expect(ev.verdict).toMatchObject({ kind: "reject", reason: "out-of-scope-edit" });
+    await wt.dispose();
   });
 });
 

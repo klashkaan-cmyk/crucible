@@ -260,7 +260,7 @@ export interface OptimizeSummary {
 }
 
 /** The current best config's scored state, against which candidates are judged. */
-interface Best {
+export interface Best {
   readonly objective: number;
   readonly cost: number;
   readonly baseline: Baseline;
@@ -355,6 +355,105 @@ export function decide(
   return { kind: "accept", objective, gain };
 }
 
+export interface CandidateEvaluation {
+  readonly verdict: Verdict;
+  readonly changedFiles: ReadonlyArray<string>;
+  readonly editorMessage: string;
+  /** Editor + all trial cost spent evaluating this candidate. */
+  readonly costUsd: number;
+  /** Confirm-level train scores; present once a candidate reaches confirm. */
+  readonly train?: ReadonlyArray<ScenarioResult>;
+  readonly holdout?: ReadonlyArray<ScenarioResult>;
+  /** Set when the verdict is run-error, so the caller can stop on 'aborted'. */
+  readonly infraKind?: InfraKind;
+}
+
+export interface EvaluateContext {
+  readonly wt: Worktree;
+  readonly best: Best;
+  readonly program: Program;
+  readonly editor: EditorFn;
+  readonly score: ScoreFn;
+  readonly iter: number;
+}
+
+/**
+ * Evaluate ONE candidate: reset the worktree, let the editor mutate it, guard the
+ * scope + lint, screen cheaply, confirm (train + safety), gate, and check the
+ * holdout -- returning a verdict and the scores WITHOUT committing. The keep
+ * decision is the caller's policy (optimize keeps greedily; research's beam keeps
+ * a population). Infra failures are caught and returned as a run-error verdict so
+ * the caller never mistakes them for a candidate fault.
+ */
+export async function evaluateCandidate(ctx: EvaluateContext): Promise<CandidateEvaluation> {
+  const { wt, best, program, editor, score, iter } = ctx;
+  const fit = program.fitness;
+  const reject = (reason: RejectReason, detail: string): Verdict => ({ kind: "reject", reason, detail });
+
+  await resetWorktree(wt);
+  const edit = await editor(wt, { program, iter, lastSuite: best.trainResults });
+  let cost = edit.costUsd;
+  const scope = await gitChangedFiles(wt);
+  const base = { changedFiles: scope, editorMessage: edit.message };
+
+  if (scope.length === 0) {
+    return { verdict: reject("no-op", "editor changed nothing"), costUsd: cost, ...base };
+  }
+  if (!withinAllowlist(scope, program.mutableSurface)) {
+    const offending = scope.find((f) => !withinAllowlist([f], program.mutableSurface)) ?? scope[0]!;
+    return { verdict: reject("out-of-scope-edit", offending), costUsd: cost, ...base };
+  }
+  const lint = await lintConfig(wt.configDir);
+  if (countByLevel(lint).error > 0) {
+    const firstError = lint.find((f) => f.level === "error");
+    return { verdict: reject("lint-error", firstError?.message ?? "lint error"), costUsd: cost, ...base };
+  }
+
+  try {
+    const screen = await score({ configDir: wt.configDir, scenarioDir: fit.suite, k: fit.k_screen, kind: "screen", iter });
+    ensureNoInfra(screen);
+    cost += sumRealCost(screen);
+    if (!promising(screen, best)) {
+      return { verdict: reject("insufficient-gain", "below best on cheap screen"), costUsd: cost, ...base };
+    }
+
+    const cand = await score({ configDir: wt.configDir, scenarioDir: fit.suite, k: fit.k_confirm, kind: "confirm", iter });
+    ensureNoInfra(cand);
+    const safety = fit.safety
+      ? await score({ configDir: wt.configDir, scenarioDir: fit.safety, k: fit.k_confirm, kind: "confirm", iter })
+      : [];
+    ensureNoInfra(safety);
+    cost += sumRealCost(cand) + sumRealCost(safety);
+
+    const verdict = decide(cand, safety, best, program);
+    if (verdict.kind === "reject") {
+      return { verdict, costUsd: cost, train: cand, ...base };
+    }
+
+    let holdout: ScenarioResult[] | undefined;
+    if (fit.holdout) {
+      holdout = await score({ configDir: wt.configDir, scenarioDir: fit.holdout, k: fit.k_confirm, kind: "confirm", iter });
+      ensureNoInfra(holdout);
+      cost += sumRealCost(holdout);
+      if (fit.accept.holdout_no_regression && best.holdoutBaseline) {
+        const hr = diffAgainstBaseline(holdout, best.holdoutBaseline, {
+          passRateDrop: 0,
+          costIncrease: fit.accept.cost_tolerance,
+        });
+        if (hr.length > 0) {
+          return { verdict: reject("holdout-regression", hr[0]!.detail), costUsd: cost, train: cand, holdout, ...base };
+        }
+      }
+    }
+    return { verdict, costUsd: cost, train: cand, ...(holdout ? { holdout } : {}), ...base };
+  } catch (err: unknown) {
+    if (err instanceof InfraError) {
+      return { verdict: reject("run-error", `${err.kind}: ${err.message}`), costUsd: cost, infraKind: err.kind, ...base };
+    }
+    throw err;
+  }
+}
+
 /**
  * A markdown summary of a run for the PR review gate. Pure. Crucible NEVER merges
  * -- this is the artifact a human reviews before merging the branch themselves.
@@ -385,7 +484,6 @@ export function optimizeMarkdown(summary: OptimizeSummary): string {
 export async function optimize(opts: OptimizeOptions): Promise<OptimizeSummary> {
   const repo = await resolveConfigRepo(opts.configDir);
   const wt = await openWorktree(repo, opts.branch, { reset: !opts.resume });
-  const fit = opts.program.fitness;
   const records: IterationRecord[] = [];
   const rejected = initRejectCounts();
   const commits: string[] = [];
@@ -404,147 +502,67 @@ export async function optimize(opts: OptimizeOptions): Promise<OptimizeSummary> 
       if (cum >= opts.budgetUsd) break;
       if (plateau >= opts.plateauIters) break;
       iters = iter;
-      await resetWorktree(wt);
 
-      // 1. MUTATE
-      const edit = await opts.editor(wt, { program: opts.program, iter, lastSuite: best.trainResults });
-      let iterCost = edit.costUsd;
-      cum += edit.costUsd;
+      const ev = await evaluateCandidate({
+        wt, best, program: opts.program, editor: opts.editor, score: opts.score, iter,
+      });
+      cum += ev.costUsd;
+      const verdict = ev.verdict;
 
-      // The diff is the scope-guard surface AND what each record reports changed.
-      const scope = await gitChangedFiles(wt);
-
-      const record = async (verdict: Verdict, commit?: string): Promise<void> => {
+      const record = async (v: Verdict, commit?: string): Promise<void> => {
         const rec: IterationRecord = {
           iter,
-          verdict,
-          changedFiles: scope,
-          editorMessage: edit.message,
-          costUsd: iterCost,
+          verdict: v,
+          changedFiles: ev.changedFiles,
+          editorMessage: ev.editorMessage,
+          costUsd: ev.costUsd,
           cumCostUsd: cum,
           ...(commit ? { commit } : {}),
         };
         records.push(rec);
-        if (verdict.kind === "reject") {
-          rejected[verdict.reason] += 1;
+        if (v.kind === "reject") {
+          rejected[v.reason] += 1;
           // Infra failures (run-error) are not the candidate's fault -- they must
           // not advance the plateau counter toward a false "converged".
-          if (verdict.reason !== "run-error") plateau += 1;
+          if (v.reason !== "run-error") plateau += 1;
         }
         await writeLedger(opts.ledgerPath, rec);
       };
 
-      // 2. SCOPE GUARD (free) -- reject before spending a single trial.
-      if (scope.length === 0) {
-        await record({ kind: "reject", reason: "no-op", detail: "editor changed nothing" });
-        continue;
-      }
-      if (!withinAllowlist(scope, opts.program.mutableSurface)) {
-        const offending = scope.find((f) => !withinAllowlist([f], opts.program.mutableSurface)) ?? scope[0]!;
-        await record({ kind: "reject", reason: "out-of-scope-edit", detail: offending });
+      if (verdict.kind === "reject") {
+        await record(verdict);
+        // Infra failure: stop only if the run itself was aborted.
+        if (ev.infraKind === "aborted" || opts.signal?.aborted) break;
         continue;
       }
 
-      // 2b. LINT PRE-GATE (free) -- reject a malformed candidate before scoring.
-      const lint = await lintConfig(wt.configDir);
-      if (countByLevel(lint).error > 0) {
-        const firstError = lint.find((f) => f.level === "error");
-        await record({ kind: "reject", reason: "lint-error", detail: firstError?.message ?? "lint error" });
-        continue;
-      }
-
-      try {
-        // 3. SCREEN cheap.
-        const screen = await opts.score({
-          configDir: wt.configDir, scenarioDir: fit.suite, k: fit.k_screen, kind: "screen", iter,
-        });
-        ensureNoInfra(screen);
-        iterCost += sumRealCost(screen);
-        cum += sumRealCost(screen);
-        if (!promising(screen, best)) {
-          await record({ kind: "reject", reason: "insufficient-gain", detail: "below best on cheap screen" });
-          continue;
-        }
-
-        // 3b. CONFIRM expensive (train + safety).
-        const cand = await opts.score({
-          configDir: wt.configDir, scenarioDir: fit.suite, k: fit.k_confirm, kind: "confirm", iter,
-        });
-        ensureNoInfra(cand);
-        const safety = fit.safety
-          ? await opts.score({ configDir: wt.configDir, scenarioDir: fit.safety, k: fit.k_confirm, kind: "confirm", iter })
-          : [];
-        ensureNoInfra(safety);
-        const confirmCost = sumRealCost(cand) + sumRealCost(safety);
-        iterCost += confirmCost;
-        cum += confirmCost;
-
-        // 4. ACCEPT GATE.
-        const verdict = decide(cand, safety, best, opts.program);
-        if (verdict.kind === "reject") {
-          await record(verdict);
-          continue;
-        }
-
-        // 5. HOLDOUT -- only candidates that passed train pay for it.
-        let holdout: ScenarioResult[] | undefined;
-        if (fit.holdout) {
-          holdout = await opts.score({
-            configDir: wt.configDir, scenarioDir: fit.holdout, k: fit.k_confirm, kind: "confirm", iter,
-          });
-          ensureNoInfra(holdout);
-          const hCost = sumRealCost(holdout);
-          iterCost += hCost;
-          cum += hCost;
-          if (fit.accept.holdout_no_regression && best.holdoutBaseline) {
-            const hr = diffAgainstBaseline(holdout, best.holdoutBaseline, {
-              passRateDrop: 0,
-              costIncrease: fit.accept.cost_tolerance,
-            });
-            if (hr.length > 0) {
-              await record({ kind: "reject", reason: "holdout-regression", detail: hr[0]!.detail });
-              continue;
-            }
-          }
-        }
-
-        // 6. KEEP -- commit onto the branch, advance best, reset the plateau.
-        if (opts.dryRun) {
-          // Report a would-accept; never commit or advance the best.
-          accepted += 1;
-          plateau = 0;
-          await record(verdict);
-          continue;
-        }
-        const commit = await commitWorktree(wt, `optimize: iter ${iter} (+${verdict.gain.toFixed(3)})`);
-        commits.push(commit);
-        best = {
-          objective: verdict.objective,
-          cost: medianCostOf(cand),
-          baseline: toBaseline(cand),
-          holdoutBaseline: holdout ? toBaseline(holdout) : best.holdoutBaseline,
-          trainResults: cand,
-        };
+      // ACCEPT. In dry-run, report the would-accept but never commit or advance.
+      if (opts.dryRun) {
         accepted += 1;
         plateau = 0;
-        await record(verdict, commit);
+        await record(verdict);
+        continue;
+      }
+      const cand = ev.train ?? []; // an accepted candidate always carries confirm scores
+      const commit = await commitWorktree(wt, `optimize: iter ${iter} (+${verdict.gain.toFixed(3)})`);
+      commits.push(commit);
+      best = {
+        objective: verdict.objective,
+        cost: medianCostOf(cand),
+        baseline: toBaseline(cand),
+        holdoutBaseline: ev.holdout ? toBaseline(ev.holdout) : best.holdoutBaseline,
+        trainResults: cand,
+      };
+      accepted += 1;
+      plateau = 0;
+      await record(verdict, commit);
 
-        // 6b. RE-MEASURE the best periodically so the bar does not drift on a
-        // single noisy snapshot. Re-scores the just-committed tip.
-        if (opts.remeasureEvery && accepted % opts.remeasureEvery === 0) {
-          const re = await scoreBaseline(wt, opts, iter);
-          best = re.best;
-          cum += re.costUsd;
-        }
-      } catch (err: unknown) {
-        if (err instanceof InfraError) {
-          // Infra failure mid-iteration: record it, do not burn the plateau, and
-          // either stop (aborted) or move on -- a retrying scorer absorbs blips.
-          await record({ kind: "reject", reason: "run-error", detail: `${err.kind}: ${err.message}` });
-          if (opts.signal?.aborted || err.kind === "aborted") break;
-          continue;
-        }
-        throw err;
+      // RE-MEASURE the best periodically so the bar does not drift on a single
+      // noisy snapshot. Re-scores the just-committed tip.
+      if (opts.remeasureEvery && accepted % opts.remeasureEvery === 0) {
+        const re = await scoreBaseline(wt, opts, iter);
+        best = re.best;
+        cum += re.costUsd;
       }
     }
 
