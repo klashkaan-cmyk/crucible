@@ -37,6 +37,9 @@ import {
 } from "./optimize.js";
 import { loadProgram } from "./program.js";
 import { makeEditor, bootstrapSuite } from "./editor.js";
+import { research, researchMarkdown, type ResearchOptions } from "./research.js";
+import { makeIdeator } from "./ideator.js";
+import { makeSynthesizer } from "./frontier.js";
 import { countByLevel, lintConfig } from "./lint.js";
 import {
   bisectFirstBad,
@@ -198,6 +201,35 @@ program
   .option("--dry-run", "evaluate would-accepts but never commit", false)
   .option("--pr-comment", "post/update a sticky results comment on the PR (CI)", false)
   .action(optimizeCommand);
+
+program
+  .command("research")
+  .description("Open-ended autoresearch: a beam of config lineages that explores, grows its own eval, and never auto-merges")
+  .option("-c, --config <dir>", "config dir under test", ".claude")
+  .option("-p, --program <file>", "the PROGRAM.md driving the run", "PROGRAM.md")
+  .option("--budget-usd <n>", "hard ceiling on total spend", "60")
+  .option("--max-rounds <n>", "max research rounds", "40")
+  .option("--beam <n>", "beam width", "3")
+  .option("--ideas-per-member <n>", "hypotheses per beam member per round", "2")
+  .option("--diversity-floor <n>", "min config distance between beam members", "0.15")
+  .option("--editor-model <model>", "model the editor runs as")
+  .option("--ideator-model <model>", "model the Ideator and synthesizer run as")
+  .option("--judge-model <model>", "model for LLM-judge assertions")
+  .option("--reference-config <dir>", "frozen config the editor/ideator run on (default: --config)")
+  .option("--canary <dir>", "frozen north-star suite (default: program research.canary)")
+  .option("--expand-every <n>", "grow the frontier every N rounds", "5")
+  .option("--saturation <n>", "expand early when mean pass_rate hits this", "0.95")
+  .option("--expand-n <n>", "scenarios to synthesize per expansion", "3")
+  .option("--holdout-fraction <n>", "fraction of new scenarios routed to holdout", "0.3")
+  .option("--no-expand", "disable the self-expanding frontier")
+  .option("--concurrency <n>", "parallel trials (default 1)")
+  .option("--claude-bin <path>", "path to the claude binary", "claude")
+  .option("--ledger <file>", "append a JSONL round ledger here", ".crucible/research/ledger.jsonl")
+  .option("--journal <file>", "append the research journal here", ".crucible/research/journal.md")
+  .option("--ideas <file>", "append the idea backlog (JSONL) here", ".crucible/research/ideas.jsonl")
+  .option("--run-id <id>", "stable id for branch naming (default: date)")
+  .option("--pr-comment", "post/update a sticky results comment on the PR (CI)", false)
+  .action(researchCommand);
 
 program.parseAsync(process.argv);
 
@@ -447,6 +479,156 @@ async function optimizeCommand(opts: {
   });
 
   process.exit(summary.accepted > 0 ? 0 : 1);
+}
+
+async function researchCommand(opts: {
+  config: string;
+  program: string;
+  budgetUsd: string;
+  maxRounds: string;
+  beam: string;
+  ideasPerMember: string;
+  diversityFloor: string;
+  editorModel?: string;
+  ideatorModel?: string;
+  judgeModel?: string;
+  referenceConfig?: string;
+  canary?: string;
+  expandEvery: string;
+  saturation: string;
+  expandN: string;
+  holdoutFraction: string;
+  expand: boolean;
+  concurrency?: string;
+  claudeBin: string;
+  ledger: string;
+  journal: string;
+  ideas: string;
+  runId?: string;
+  prComment: boolean;
+}): Promise<void> {
+  let telemetry;
+  try {
+    telemetry = await ensureConsent();
+  } catch (err) {
+    if (err instanceof ConsentDeclined) {
+      console.error(pc.yellow("\nTerms not accepted -- nothing was run."));
+      process.exit(3);
+    }
+    throw err;
+  }
+  await maybeShowNotice(telemetry);
+
+  const program = await loadProgram(path.resolve(opts.program));
+  const configDir = path.resolve(opts.config);
+  const referenceConfig = path.resolve(opts.referenceConfig ?? opts.config);
+
+  const suiteDir = path.resolve(program.fitness.suite);
+  const written = await bootstrapSuite(configDir, suiteDir);
+  if (written > 0) console.error(pc.dim(`bootstrapped ${written} starter scenario(s) into ${suiteDir} -- review them`));
+
+  const runId = opts.runId ?? new Date().toISOString().slice(0, 10).replace(/-/g, "");
+  const ac = new AbortController();
+  const onSignal = (): void => {
+    console.error(pc.yellow("\nsignal received -- stopping after the current step..."));
+    ac.abort();
+  };
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
+
+  const editor = makeEditor({
+    claudeBin: opts.claudeBin,
+    referenceConfigDir: referenceConfig,
+    maxTurns: 40,
+    ...(opts.editorModel ? { model: opts.editorModel } : {}),
+  });
+  const ideator = makeIdeator({
+    program,
+    referenceConfigDir: referenceConfig,
+    ideasPerMember: parseInt(opts.ideasPerMember, 10) || 2,
+    ...(opts.claudeBin ? { claudeBin: opts.claudeBin } : {}),
+    ...(opts.ideatorModel ? { model: opts.ideatorModel } : {}),
+  });
+  const synthesize = opts.expand !== false
+    ? makeSynthesizer({
+        referenceConfigDir: referenceConfig,
+        ...(opts.claudeBin ? { claudeBin: opts.claudeBin } : {}),
+        ...(opts.ideatorModel ? { model: opts.ideatorModel } : {}),
+      })
+    : undefined;
+  const score = withRetry(
+    runSuiteScorer({
+      claudeBin: opts.claudeBin,
+      ...(opts.judgeModel ? { judgeModel: opts.judgeModel } : {}),
+      ...(opts.concurrency ? { concurrency: Math.max(1, parseInt(opts.concurrency, 10) || 1) } : {}),
+    }),
+    {
+      signal: ac.signal,
+      onWait: (kind, attempt, ms) => console.error(pc.yellow(`${kind}: backing off ${ms}ms (attempt ${attempt + 1})`)),
+    },
+  );
+
+  const canaryDir = opts.canary ?? program.research?.canary;
+  for (const f of [opts.ledger, opts.journal, opts.ideas]) {
+    await mkdir(path.dirname(path.resolve(f)), { recursive: true }).catch(() => undefined);
+  }
+
+  const researchOpts: ResearchOptions = {
+    configDir,
+    program,
+    editor,
+    score,
+    ideator,
+    beamWidth: parseInt(opts.beam, 10) || 3,
+    maxRounds: parseInt(opts.maxRounds, 10) || 40,
+    diversityFloor: parseFloat(opts.diversityFloor) || 0.15,
+    runId,
+    budgetUsd: parseFloat(opts.budgetUsd) || 60,
+    ledgerPath: path.resolve(opts.ledger),
+    journalPath: path.resolve(opts.journal),
+    ideasPath: path.resolve(opts.ideas),
+    signal: ac.signal,
+    expandEvery: parseInt(opts.expandEvery, 10) || 5,
+    saturation: parseFloat(opts.saturation) || 0.95,
+    expandN: parseInt(opts.expandN, 10) || 3,
+    holdoutFraction: parseFloat(opts.holdoutFraction) || 0.3,
+    ...(synthesize ? { synthesize } : {}),
+    ...(canaryDir ? { canaryDir: path.resolve(canaryDir) } : {}),
+  };
+
+  console.error(
+    pc.dim(`research: suite ${program.fitness.suite} on ${configDir} -> beam ${researchOpts.beamWidth}, ${researchOpts.maxRounds} rounds\n`),
+  );
+
+  const summary = await research(researchOpts);
+
+  console.log("\n" + researchMarkdown(summary).split("\n").slice(1).join("\n"));
+
+  if (opts.prComment) {
+    const ctx = prContextFromEnv();
+    if (!ctx) {
+      console.error(pc.yellow("--pr-comment: no PR context; skipping."));
+    } else {
+      try {
+        const res = await upsertPrComment(ctx, researchMarkdown(summary));
+        console.error(pc.dim(`PR comment ${res.action} (#${res.id})`));
+      } catch (err) {
+        console.error(pc.yellow(`--pr-comment failed: ${(err as Error).message}`));
+      }
+    }
+  }
+
+  await track(telemetry, {
+    version: VERSION,
+    event: "research",
+    props: { rounds: summary.rounds, halted: summary.halted },
+  });
+
+  const canaryRegressed =
+    summary.baselineCanary !== undefined &&
+    summary.finalCanary !== undefined &&
+    summary.finalCanary < summary.baselineCanary;
+  process.exit(summary.halted || canaryRegressed ? 1 : 0);
 }
 
 async function watchCommand(opts: {

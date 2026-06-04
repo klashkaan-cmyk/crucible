@@ -94,6 +94,14 @@ export interface ResearchOptions {
   readonly holdoutFraction?: number;
   /** How many new scenarios to synthesize per expansion (default 3). */
   readonly expandN?: number;
+  /**
+   * Frozen north-star suite, scored each round. Never grown, never shown to the
+   * editor/Ideator. If its objective drops below the seed's, the whole research
+   * process is overfitting its own grown eval -- halt + alert. Off when unset.
+   */
+  readonly canaryDir?: string;
+  /** Tolerance before a canary drop counts as a regression (default 0.05). */
+  readonly canaryTolerance?: number;
   readonly signal?: AbortSignal;
 }
 
@@ -103,6 +111,7 @@ export interface RoundRecord {
   readonly deduped: number;
   readonly accepted: number;
   readonly frontierAdded: number;
+  readonly canaryObjective?: number;
   readonly beam: ReadonlyArray<{ branch: string; objective: number }>;
   readonly bestObjective: number;
   readonly cumCostUsd: number;
@@ -189,9 +198,40 @@ export interface ResearchSummary {
   readonly bestBranch: string;
   readonly bestObjective: number;
   readonly baselineObjective: number;
+  readonly baselineCanary?: number;
+  readonly finalCanary?: number;
+  /** True if the run stopped because the canary regressed (Goodhart guard). */
+  readonly halted: boolean;
+  readonly ideaSuccessRate: number;
   readonly costUsd: number;
   readonly beam: ReadonlyArray<{ branch: string; objective: number; lineage: number }>;
   readonly records: ReadonlyArray<RoundRecord>;
+}
+
+/**
+ * A markdown summary for the research PR review gate. Pure. Crucible never merges
+ * -- this is the artifact a human reviews before merging the winning lineage.
+ */
+export function researchMarkdown(summary: ResearchSummary): string {
+  const dObj = summary.bestObjective - summary.baselineObjective;
+  const canaryLine =
+    summary.baselineCanary !== undefined && summary.finalCanary !== undefined
+      ? `- canary: ${summary.baselineCanary.toFixed(3)} → ${summary.finalCanary.toFixed(3)}${summary.finalCanary < summary.baselineCanary ? " ⚠ regressed" : ""}`
+      : "- canary: (none configured)";
+  return [
+    "<!-- crucible-research -->",
+    `**Crucible research** — best lineage \`${summary.bestBranch}\``,
+    "",
+    `- objective: ${summary.baselineObjective.toFixed(3)} → ${summary.bestObjective.toFixed(3)} (${dObj >= 0 ? "+" : ""}${dObj.toFixed(3)})`,
+    canaryLine,
+    `- rounds: ${summary.rounds}, idea success rate: ${(summary.ideaSuccessRate * 100).toFixed(0)}%`,
+    `- cost: ~$${summary.costUsd.toFixed(4)}`,
+    summary.halted ? "- **HALTED**: canary regressed — research was overfitting its own grown eval." : "",
+    "",
+    `Review and merge \`${summary.bestBranch}\` yourself — Crucible never merges for you.`,
+  ]
+    .filter((l) => l !== "")
+    .join("\n");
 }
 
 // --- beam selection (pure) --------------------------------------------------
@@ -260,6 +300,16 @@ export async function research(opts: ResearchOptions): Promise<ResearchSummary> 
   let beam: BeamMember[] = [seed.member];
   const baselineObjective = seed.member.objective;
   const backlog: Hypothesis[] = [];
+
+  const canaryTol = opts.canaryTolerance ?? 0.05;
+  let baselineCanary: number | undefined;
+  if (opts.canaryDir) {
+    const c = await scoreObjectiveAt(repo, seed.member.branch, opts.canaryDir, opts);
+    baselineCanary = c.objective;
+    cum += c.costUsd;
+  }
+  let finalCanary = baselineCanary;
+  let halted = false;
 
   for (let round = 1; round <= opts.maxRounds; round++) {
     if (opts.signal?.aborted) break;
@@ -356,26 +406,48 @@ export async function research(opts: ResearchOptions): Promise<ResearchSummary> 
       }
     }
 
+    // Canary trust-check: score the frozen north-star at the current best. If it
+    // regressed past tolerance, the whole process is overfitting its grown eval.
+    let canaryObjective: number | undefined;
+    if (opts.canaryDir) {
+      const bestMember = beam.reduce((a, b) => (b.objective > a.objective ? b : a), beam[0]!);
+      const c = await scoreObjectiveAt(repo, bestMember.branch, opts.canaryDir, opts);
+      canaryObjective = c.objective;
+      finalCanary = c.objective;
+      cum += c.costUsd;
+      if (baselineCanary !== undefined && canaryObjective < baselineCanary - canaryTol) {
+        halted = true;
+      }
+    }
+
     const rec: RoundRecord = {
       round,
       hypotheses: proposed.length,
       deduped: duplicates.length,
       accepted,
       frontierAdded,
+      ...(canaryObjective !== undefined ? { canaryObjective } : {}),
       beam: beam.map((m) => ({ branch: m.branch, objective: m.objective })),
       bestObjective: Math.max(...beam.map((m) => m.objective)),
       cumCostUsd: cum,
     };
     records.push(rec);
     await writeLedger(opts.ledgerPath, rec);
+    if (halted) break;
   }
 
   const best = beam.reduce((a, b) => (b.objective > a.objective ? b : a), beam[0]!);
+  const totalAccepted = records.reduce((s, r) => s + r.accepted, 0);
+  const totalProposed = records.reduce((s, r) => s + r.hypotheses, 0);
   return {
     rounds: records.length,
     bestBranch: best.branch,
     bestObjective: best.objective,
     baselineObjective,
+    ...(baselineCanary !== undefined ? { baselineCanary } : {}),
+    ...(finalCanary !== undefined ? { finalCanary } : {}),
+    halted,
+    ideaSuccessRate: totalProposed > 0 ? totalAccepted / totalProposed : 0,
     costUsd: cum,
     beam: beam.map((m) => ({ branch: m.branch, objective: m.objective, lineage: m.lineage.length })),
     records,
@@ -415,6 +487,24 @@ async function scoreBranch(
       trainResults: train,
     };
     return { best, costUsd, noveltyHash: (await configFingerprint(wt.configDir)) ?? branch };
+  } finally {
+    await wt.dispose();
+  }
+}
+
+/** Score one scenario dir (e.g. the canary) at a branch tip into an objective. */
+async function scoreObjectiveAt(
+  repo: Repo,
+  branch: string,
+  scenarioDir: string,
+  opts: ResearchOptions,
+): Promise<{ objective: number; costUsd: number }> {
+  const wt = await openWorktree(repo, branch, { reset: false });
+  try {
+    const res = await opts.score({
+      configDir: wt.configDir, scenarioDir, k: opts.program.fitness.k_confirm, kind: "confirm", iter: 0,
+    });
+    return { objective: objectiveOf(res), costUsd: sumRealCost(res) };
   } finally {
     await wt.dispose();
   }

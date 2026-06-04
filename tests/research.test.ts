@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { loadProgram, type Program } from "../src/program.js";
 import {
   research,
+  researchMarkdown,
   selectBeam,
   noveltyDistance,
   dropDuplicates,
@@ -14,6 +15,7 @@ import {
   type BeamMember,
   type IdeatorFn,
   type Hypothesis,
+  type ResearchSummary,
 } from "../src/research.js";
 import type { EditorFn, ScoreFn, Best } from "../src/optimize.js";
 import type { SynthesizeFn, CandidateScenario } from "../src/frontier.js";
@@ -70,6 +72,31 @@ describe("selectBeam", () => {
 function hyp(rationale: string, parentBeam = 0): Hypothesis {
   return { id: rationale.slice(0, 6), parentBeam, rationale };
 }
+
+describe("researchMarkdown", () => {
+  it("renders objective + canary deltas, a halt warning, and a never-merge note", () => {
+    const summary = {
+      rounds: 3,
+      bestBranch: "research/x/r3-c0",
+      bestObjective: 0.9,
+      baselineObjective: 0.5,
+      baselineCanary: 0.8,
+      finalCanary: 0.6,
+      halted: true,
+      ideaSuccessRate: 0.25,
+      costUsd: 5.5,
+      beam: [],
+      records: [],
+    } as ResearchSummary;
+    const md = researchMarkdown(summary);
+    expect(md).toMatch(/research\/x\/r3-c0/);
+    expect(md).toMatch(/0\.500 → 0\.900 \(\+0\.400\)/);
+    expect(md).toMatch(/canary: 0\.800 → 0\.600/);
+    expect(md).toMatch(/regressed/);
+    expect(md).toMatch(/HALTED/);
+    expect(md).toMatch(/never merges/);
+  });
+});
 
 describe("dropDuplicates", () => {
   it("drops ideas too similar to the backlog and within the batch", () => {
@@ -276,6 +303,42 @@ describe("research loop", () => {
     expect(summary.records[0]!.frontierAdded).toBeGreaterThanOrEqual(1);
     const written = await readdir(trainDir);
     expect(written).toContain("synth-hard1.scenario.yaml");
+  });
+
+  it("halts when the canary north-star regresses (Goodhart guard)", async () => {
+    const dir = await makeRepo();
+    const program = await loadProg();
+    const canaryDir = "/canary-suite";
+    let canaryCalls = 0;
+    const score: ScoreFn = async ({ scenarioDir, k }) => {
+      if (scenarioDir === canaryDir) {
+        canaryCalls += 1;
+        return [result("canary", canaryCalls === 1 ? k : 0, k)]; // baseline passes, then drops
+      }
+      if (scenarioDir === "safety") return [result("sec", k, k)];
+      if (scenarioDir === "holdout") return [result("h", 6, k)];
+      return [result("s", 9, k)];
+    };
+
+    const summary = await research({
+      configDir: path.join(dir, ".claude"),
+      program,
+      editor: editFromIdea,
+      score,
+      ideator: twoIdeas,
+      beamWidth: 3,
+      maxRounds: 3,
+      diversityFloor: 0.05,
+      runId: "can",
+      budgetUsd: 1000,
+      canaryDir,
+      canaryTolerance: 0.05,
+    });
+
+    expect(summary.halted).toBe(true);
+    expect(summary.baselineCanary).toBeCloseTo(1);
+    expect(summary.finalCanary!).toBeLessThan(summary.baselineCanary!);
+    expect(summary.rounds).toBe(1); // stopped after the first regressing round
   });
 
   it("halts before any round when the budget is exhausted by the seed", async () => {
