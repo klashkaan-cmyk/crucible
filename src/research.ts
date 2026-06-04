@@ -17,7 +17,9 @@
  */
 
 import { appendFile } from "node:fs/promises";
+import path from "node:path";
 import { resolveConfigRepo } from "./bisect.js";
+import { expandFrontier, isSaturated, type SynthesizeFn } from "./frontier.js";
 import { openWorktree, commitWorktree, deleteBranch } from "./worktree.js";
 import { evaluateCandidate, objectiveOf, type Best } from "./optimize.js";
 import { toBaseline } from "./baseline.js";
@@ -83,6 +85,15 @@ export interface ResearchOptions {
   readonly ideasPath?: string;
   /** Jaccard similarity at/above which a new idea is a duplicate (default 0.8). */
   readonly noveltyThreshold?: number;
+  // --- self-expanding frontier (optional; off when synthesize is unset) ---
+  readonly synthesize?: SynthesizeFn;
+  /** Grow the frontier every N rounds (default 5). */
+  readonly expandEvery?: number;
+  /** ...or early when the best member's mean pass_rate hits this (default 0.95). */
+  readonly saturation?: number;
+  readonly holdoutFraction?: number;
+  /** How many new scenarios to synthesize per expansion (default 3). */
+  readonly expandN?: number;
   readonly signal?: AbortSignal;
 }
 
@@ -91,6 +102,7 @@ export interface RoundRecord {
   readonly hypotheses: number;
   readonly deduped: number;
   readonly accepted: number;
+  readonly frontierAdded: number;
   readonly beam: ReadonlyArray<{ branch: string; objective: number }>;
   readonly bestObjective: number;
   readonly cumCostUsd: number;
@@ -314,13 +326,44 @@ export async function research(opts: ResearchOptions): Promise<ResearchSummary> 
       }
     }
 
+    // Self-expanding frontier: when the suite saturates (or on cadence), grow it
+    // and re-score the beam against the harder suite.
+    let frontierAdded = 0;
+    if (opts.synthesize) {
+      const bestMember = beam.reduce((a, b) => (b.objective > a.objective ? b : a), beam[0]!);
+      const triggered =
+        round % (opts.expandEvery ?? 5) === 0 ||
+        isSaturated(bestMember.best.trainResults, opts.saturation ?? 0.95);
+      if (triggered) {
+        const fit = opts.program.fitness;
+        const exp = await expandFrontier({
+          configDir: opts.configDir,
+          program: opts.program,
+          trainDir: path.resolve(fit.suite),
+          ...(fit.holdout ? { holdoutDir: path.resolve(fit.holdout) } : {}),
+          score: opts.score,
+          synthesize: opts.synthesize,
+          currentResults: bestMember.best.trainResults,
+          n: opts.expandN ?? 3,
+          ...(opts.holdoutFraction !== undefined ? { holdoutFraction: opts.holdoutFraction } : {}),
+        });
+        frontierAdded = exp.admittedTrain + exp.admittedHoldout;
+        if (frontierAdded > 0) {
+          const re = await rescoreBeam(repo, beam, opts);
+          beam = re.beam;
+          cum += re.costUsd;
+        }
+      }
+    }
+
     const rec: RoundRecord = {
       round,
       hypotheses: proposed.length,
       deduped: duplicates.length,
       accepted,
+      frontierAdded,
       beam: beam.map((m) => ({ branch: m.branch, objective: m.objective })),
-      bestObjective,
+      bestObjective: Math.max(...beam.map((m) => m.objective)),
       cumCostUsd: cum,
     };
     records.push(rec);
@@ -341,13 +384,17 @@ export async function research(opts: ResearchOptions): Promise<ResearchSummary> 
 
 // --- internals --------------------------------------------------------------
 
-async function seedMember(
-  repo: Awaited<ReturnType<typeof resolveConfigRepo>>,
+type Repo = Awaited<ReturnType<typeof resolveConfigRepo>>;
+
+/** Score the config at a branch tip into a Best + novelty hash. */
+async function scoreBranch(
+  repo: Repo,
   branch: string,
   opts: ResearchOptions,
-): Promise<{ member: BeamMember; costUsd: number }> {
+  reset: boolean,
+): Promise<{ best: Best; costUsd: number; noveltyHash: string }> {
   const fit = opts.program.fitness;
-  const wt = await openWorktree(repo, branch, { reset: true });
+  const wt = await openWorktree(repo, branch, reset ? { reset: true } : { reset: false });
   try {
     const train = await opts.score({
       configDir: wt.configDir, scenarioDir: fit.suite, k: fit.k_confirm, kind: "confirm", iter: 0,
@@ -360,23 +407,45 @@ async function seedMember(
       });
       costUsd += sumRealCost(holdout);
     }
-    const member: BeamMember = {
-      branch,
-      best: {
-        objective: objectiveOf(train),
-        cost: median(train.map((r) => r.medianCostUsd)),
-        baseline: toBaseline(train),
-        ...(holdout ? { holdoutBaseline: toBaseline(holdout) } : {}),
-        trainResults: train,
-      },
+    const best: Best = {
       objective: objectiveOf(train),
-      noveltyHash: (await configFingerprint(wt.configDir)) ?? branch,
-      lineage: [],
+      cost: median(train.map((r) => r.medianCostUsd)),
+      baseline: toBaseline(train),
+      ...(holdout ? { holdoutBaseline: toBaseline(holdout) } : {}),
+      trainResults: train,
     };
-    return { member, costUsd };
+    return { best, costUsd, noveltyHash: (await configFingerprint(wt.configDir)) ?? branch };
   } finally {
     await wt.dispose();
   }
+}
+
+async function seedMember(
+  repo: Repo,
+  branch: string,
+  opts: ResearchOptions,
+): Promise<{ member: BeamMember; costUsd: number }> {
+  const s = await scoreBranch(repo, branch, opts, true);
+  return {
+    member: { branch, best: s.best, objective: s.best.objective, noveltyHash: s.noveltyHash, lineage: [] },
+    costUsd: s.costUsd,
+  };
+}
+
+/** Re-score every beam member against the (possibly grown) suite. */
+async function rescoreBeam(
+  repo: Repo,
+  beam: ReadonlyArray<BeamMember>,
+  opts: ResearchOptions,
+): Promise<{ beam: BeamMember[]; costUsd: number }> {
+  let costUsd = 0;
+  const out: BeamMember[] = [];
+  for (const m of beam) {
+    const s = await scoreBranch(repo, m.branch, opts, false);
+    costUsd += s.costUsd;
+    out.push({ ...m, best: s.best, objective: s.best.objective, noveltyHash: s.noveltyHash });
+  }
+  return { beam: out, costUsd };
 }
 
 function sumRealCost(results: ReadonlyArray<ScenarioResult>): number {

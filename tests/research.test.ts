@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -16,6 +16,7 @@ import {
   type Hypothesis,
 } from "../src/research.js";
 import type { EditorFn, ScoreFn, Best } from "../src/optimize.js";
+import type { SynthesizeFn, CandidateScenario } from "../src/frontier.js";
 import type { ScenarioResult, TrialResult } from "../src/types.js";
 
 const exec = promisify(execFile);
@@ -170,6 +171,12 @@ const editFromIdea: EditorFn = async (wt, ctx) => {
   return { message: `applied ${ctx.hypothesis ?? "?"}`, costUsd: 0 };
 };
 
+const validCandidate = (name: string): CandidateScenario => ({
+  name,
+  filename: `synth-${name}.scenario.yaml`,
+  yaml: `name: ${name}\nprompt: do a hard thing\nassert:\n  - response_contains: x\n`,
+});
+
 const twoIdeas: IdeatorFn = async (beam, round) => [
   { id: `r${round}-a`, parentBeam: 0, rationale: `idea ${round}.0` },
   { id: `r${round}-b`, parentBeam: Math.min(1, beam.length - 1), rationale: `idea ${round}.1` },
@@ -232,6 +239,43 @@ describe("research loop", () => {
     const ideas = (await readFile(ideasPath, "utf8")).trim().split("\n");
     expect(ideas.length).toBeGreaterThanOrEqual(1);
     expect(JSON.parse(ideas[0]!)).toHaveProperty("status");
+  });
+
+  it("expands the frontier when the suite saturates", async () => {
+    const dir = await makeRepo();
+    const trainDir = await mkdtemp(path.join(tmpdir(), "ftrain-"));
+    const holdoutDir = await mkdtemp(path.join(tmpdir(), "fholdout-"));
+    const progFile = path.join(await mkdtemp(path.join(tmpdir(), "fprog-")), "PROGRAM.md");
+    await writeFile(
+      progFile,
+      `## Objective\no\n## Mutable surface\nallow:\n  - .claude/**\n## Fitness\nsuite: ${trainDir}\nholdout: ${holdoutDir}\nk_screen: 2\nk_confirm: 6\naccept:\n  min_objective_gain: 0.05\n`,
+    );
+    const program = await loadProgram(progFile);
+
+    // everything passes (suite is saturated) except the weakened reference
+    const satScore: ScoreFn = async ({ configDir, k }) =>
+      configDir.includes("crucible-weak") ? [result("x", 0, k)] : [result("x", k, k)];
+    const synth: SynthesizeFn = async () => [validCandidate("hard1")];
+
+    const summary = await research({
+      configDir: path.join(dir, ".claude"),
+      program,
+      editor: editFromIdea,
+      score: satScore,
+      ideator: twoIdeas,
+      beamWidth: 3,
+      maxRounds: 1,
+      diversityFloor: 0.05,
+      runId: "fx",
+      budgetUsd: 1000,
+      synthesize: synth,
+      expandEvery: 1,
+      saturation: 0.95,
+    });
+
+    expect(summary.records[0]!.frontierAdded).toBeGreaterThanOrEqual(1);
+    const written = await readdir(trainDir);
+    expect(written).toContain("synth-hard1.scenario.yaml");
   });
 
   it("halts before any round when the budget is exhausted by the seed", async () => {
