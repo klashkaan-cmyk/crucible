@@ -1,0 +1,160 @@
+name: research
+
+# Open-ended autoresearch pass. A beam of config lineages that explores, grows
+# its own eval, and is trust-checked against a frozen canary. Opens a PR with
+# the best lineage for review; it NEVER merges.
+#
+# TOKEN BUDGET -- read before changing the schedule:
+#   This run can spend up to --budget-usd per invocation (clamped to <= 40).
+#   At the weekly default below and a $20 ceiling, worst case is ~$80/month.
+#   Switching to nightly ('0 6 * * *') at the same ceiling is ~$600/month.
+#   The budget is a HARD stop inside the loop, so real spend is usually lower;
+#   the actual figure is surfaced to the job summary every run.
+
+on:
+  schedule:
+    # Weekly, Sunday 06:00 UTC. Change to '0 6 * * *' for nightly (see note above).
+    - cron: "0 6 * * 0"
+  workflow_dispatch:
+    inputs:
+      budget_usd:
+        description: "Hard ceiling on model spend in USD (clamped to 1.00 - 40.00)."
+        required: false
+        default: "20"
+      max_rounds:
+        description: "Max research rounds."
+        required: false
+        default: "20"
+      beam:
+        description: "Beam width (lineages explored in parallel)."
+        required: false
+        default: "3"
+      config:
+        description: "Config dir under test."
+        required: false
+        default: ".claude"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: crucible-research
+  cancel-in-progress: false
+
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Guard -- require API key
+        id: guard
+        env:
+          KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::warning::ANTHROPIC_API_KEY is not set -- skipping the research run."
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-node@v4
+        if: steps.guard.outputs.skip == '0'
+        with:
+          node-version: 20
+
+      - name: Build Crucible from this branch
+        if: steps.guard.outputs.skip == '0'
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install Claude Code
+        if: steps.guard.outputs.skip == '0'
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Configure git identity
+        if: steps.guard.outputs.skip == '0'
+        run: |
+          git config user.name "crucible-bot"
+          git config user.email "crucible-bot@users.noreply.github.com"
+
+      - name: Clamp budget
+        if: steps.guard.outputs.skip == '0'
+        id: budget
+        env:
+          REQ: ${{ github.event.inputs.budget_usd }}
+        run: |
+          # Empty (scheduled run) or non-numeric -> default 20.
+          case "$REQ" in
+            ''|*[!0-9.]*) REQ=20 ;;
+          esac
+          VALUE=$(awk -v v="$REQ" 'BEGIN{ if(v<1)v=1; if(v>40)v=40; printf "%.2f", v }')
+          echo "value=$VALUE" >> "$GITHUB_OUTPUT"
+          echo "Budget ceiling for this run: \$$VALUE" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run research
+        if: steps.guard.outputs.skip == '0'
+        id: research
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CRUCIBLE_AGREE: "1"
+          CRUCIBLE_TELEMETRY: "0"
+        run: |
+          RUN_ID="gh${{ github.run_id }}"
+          echo "base_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          set +e
+          node dist/cli.js research \
+            --config "${{ github.event.inputs.config || '.claude' }}" \
+            --program PROGRAM.md \
+            --run-id "$RUN_ID" \
+            --budget-usd "${{ steps.budget.outputs.value }}" \
+            --max-rounds "${{ github.event.inputs.max_rounds || '20' }}" \
+            --beam "${{ github.event.inputs.beam || '3' }}" \
+            --concurrency 1 \
+            > research-out.md
+          echo "exit=$?" >> "$GITHUB_OUTPUT"
+          set -e
+          cat research-out.md
+          # Best lineage branch name is printed in the markdown as `research/<id>/...`.
+          BEST=$(grep -oiE 'research/[A-Za-z0-9_./-]+' research-out.md | head -1)
+          echo "best=$BEST" >> "$GITHUB_OUTPUT"
+
+      - name: Publish summary
+        if: always() && steps.guard.outputs.skip == '0'
+        run: |
+          {
+            echo "## Crucible research"
+            echo
+            if [ -f research-out.md ]; then cat research-out.md; else echo "_(no output captured)_"; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open PR for the best lineage
+        # Skip when the run halted / regressed the canary (exit 1) -- the result
+        # is not trustworthy and must not be proposed for merge.
+        if: steps.guard.outputs.skip == '0' && steps.research.outputs.exit == '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH="${{ steps.research.outputs.best }}"
+          BASE_SHA="${{ steps.research.outputs.base_sha }}"
+          if [ -z "$BRANCH" ] || ! git rev-parse --verify "$BRANCH" >/dev/null 2>&1; then
+            echo "No best lineage branch found -- nothing to PR."
+            exit 0
+          fi
+          AHEAD=$(git rev-list --count "$BASE_SHA..$BRANCH" 2>/dev/null || echo 0)
+          if [ "$AHEAD" -gt 0 ]; then
+            git push origin "$BRANCH"
+            gh pr create \
+              --base "${{ github.event.repository.default_branch }}" \
+              --head "$BRANCH" \
+              --title "crucible research: best lineage ($AHEAD change(s))" \
+              --body-file research-out.md
+          else
+            echo "Best lineage $BRANCH is identical to base -- no improvement to PR."
+          fi
