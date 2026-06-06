@@ -57,10 +57,11 @@ import { badgeEndpoint } from "./badge.js";
 import { buildComment, prContextFromEnv, upsertPrComment } from "./prcomment.js";
 import { renderScenarios, summarizeConfig } from "./generate.js";
 import { explain } from "./explain.js";
+import { hasFindingAtOrAbove, maxSeverity, scanConfig, toNdjson } from "./supplychain.js";
 import { loadScenario } from "./scenario.js";
 import type { ScenarioResult } from "./types.js";
 
-const VERSION = "0.6.1";
+const VERSION = "0.7.0";
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const program = new Command();
@@ -179,6 +180,15 @@ program
   .option("-c, --config <dir>", "config dir to lint", ".claude")
   .option("--json", "output findings as JSON", false)
   .action(lintCommand);
+
+program
+  .command("scan")
+  .description("Supply-chain exposure scan: check a config's MCP servers, skills, and deps against an advisory catalog (no model calls, no cost)")
+  .option("-c, --config <dir>", "config dir to scan", ".claude")
+  .option("-e, --exposure-catalog <path>", "advisory catalog JSON file or directory of catalogs")
+  .option("--format <fmt>", "output format: text | ndjson | json", "text")
+  .option("--fail-on <severity>", "exit non-zero on a finding at/above this severity", "high")
+  .action(scanCommand);
 
 program
   .command("optimize")
@@ -941,6 +951,60 @@ async function lintCommand(opts: { config: string; json?: boolean }): Promise<vo
     console.log(`\n${pc.red(`${counts.error} error(s)`)}, ${pc.yellow(`${counts.warn} warning(s)`)}`);
   }
   process.exit(counts.error > 0 ? 1 : 0);
+}
+
+async function scanCommand(opts: {
+  config: string;
+  exposureCatalog?: string;
+  format: string;
+  failOn: string;
+}): Promise<void> {
+  const dir = path.resolve(opts.config);
+  const result = await scanConfig(
+    dir,
+    opts.exposureCatalog ? path.resolve(opts.exposureCatalog) : undefined,
+  ).catch((err: Error) => {
+    console.error(pc.red(`scan failed: ${err.message}`));
+    return process.exit(2);
+  });
+  const { components, findings, catalogEntries } = result;
+  const fmt = (opts.format || "text").toLowerCase();
+
+  if (fmt === "ndjson") {
+    process.stdout.write(toNdjson(components, findings));
+  } else if (fmt === "json") {
+    process.stdout.write(JSON.stringify({ components, findings, catalogEntries }, null, 2) + "\n");
+  } else {
+    console.log(pc.dim(`config: ${dir}`));
+    const byEco = components.reduce<Record<string, number>>((acc, c) => {
+      acc[c.ecosystem] = (acc[c.ecosystem] ?? 0) + 1;
+      return acc;
+    }, {});
+    const summary = Object.entries(byEco).map(([e, n]) => `${n} ${e}`).join(", ") || "nothing";
+    console.log(`Inventoried ${components.length} component(s): ${pc.dim(summary)}`);
+    if (!opts.exposureCatalog) {
+      console.log(pc.dim("No --exposure-catalog given; inventory only. Pass one to check for known exposures."));
+    } else if (findings.length === 0) {
+      console.log(pc.green(`No known exposures (${catalogEntries} advisory entr${catalogEntries === 1 ? "y" : "ies"} checked).`));
+    } else {
+      for (const f of findings) {
+        console.log(
+          `${sevTag(f.severity)} ${pc.dim(f.ecosystem)} ${f.packageName}${f.version ? "@" + f.version : ""}  ${pc.dim(f.catalogId)}\n    ${f.evidence}`,
+        );
+      }
+      const worst = maxSeverity(findings);
+      console.log(`\n${pc.red(`${findings.length} exposure finding(s)`)}${worst ? pc.dim(`  worst: ${worst}`) : ""}`);
+    }
+  }
+
+  const gated = Boolean(opts.exposureCatalog) && hasFindingAtOrAbove(findings, opts.failOn);
+  process.exit(gated ? 1 : 0);
+}
+
+function sevTag(sev: string): string {
+  if (sev === "critical" || sev === "high") return pc.red(sev);
+  if (sev === "medium") return pc.yellow(sev);
+  return pc.dim(sev);
 }
 
 async function writeIfAbsent(file: string, content: string): Promise<void> {
