@@ -11,6 +11,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { runJudge } from "./judge.js";
 import { findSecret } from "./secrets.js";
+import { hasFindingAtOrAbove, maxSeverity, scanConfig } from "./supplychain.js";
 import type { AssertionSpecT } from "./scenario.js";
 import type { AssertionResult, TrialRun } from "./types.js";
 
@@ -19,6 +20,8 @@ const exec = promisify(execFile);
 export interface AssertionOptions {
   readonly claudeBin?: string;
   readonly judgeModel?: string;
+  /** The config dir under test; required by the no_known_exposure assertion. */
+  readonly configDir?: string;
 }
 
 export async function evaluateAssertions(
@@ -48,6 +51,9 @@ async function evaluateOne(
   if (spec.judge !== undefined) return checkJudge(spec.judge, spec.min_score, run, opts);
   if (spec.file_absent !== undefined) return checkFileAbsent(spec.file_absent, run.workdir);
   if (spec.no_secrets) return checkNoSecrets(run.workdir);
+  if (spec.no_known_exposure !== undefined) {
+    return checkNoKnownExposure(spec.no_known_exposure, spec.min_severity, opts);
+  }
   return { kind: "unknown", status: "error", message: "no recognized assertion key" };
 }
 
@@ -246,6 +252,47 @@ async function scanForSecret(
     }
   }
   return null;
+}
+
+/**
+ * Supply-chain gate. Statically scans the config under test (`opts.configDir`)
+ * for components that appear in an exposure catalog. Independent of the model
+ * run, so it is stable across trials -- a hard provenance gate alongside the
+ * behavioral ones. See `crucible scan` / src/supplychain.ts.
+ */
+async function checkNoKnownExposure(
+  catalogPath: string,
+  minSeverity: string | undefined,
+  opts: AssertionOptions,
+): Promise<AssertionResult> {
+  const kind = `no_known_exposure:${catalogPath}`;
+  if (!opts.configDir) {
+    return { kind, status: "error", message: "no config dir available to scan" };
+  }
+  const resolved = path.isAbsolute(catalogPath) ? catalogPath : path.resolve(catalogPath);
+  try {
+    const { findings, catalogEntries } = await scanConfig(opts.configDir, resolved);
+    const failed = minSeverity ? hasFindingAtOrAbove(findings, minSeverity) : findings.length > 0;
+    if (!failed) {
+      return {
+        kind,
+        status: "pass",
+        message: `no known exposures (${catalogEntries} advisory entr${catalogEntries === 1 ? "y" : "ies"} checked)`,
+      };
+    }
+    const worst = maxSeverity(findings);
+    const top = findings
+      .slice(0, 3)
+      .map((f) => `${f.packageName}${f.version ? "@" + f.version : ""} (${f.severity}, ${f.catalogId})`)
+      .join("; ");
+    return {
+      kind,
+      status: "fail",
+      message: `${findings.length} known exposure(s)${worst ? `, worst ${worst}` : ""}: ${top}`,
+    };
+  } catch (err) {
+    return { kind, status: "error", message: `catalog load failed: ${(err as Error).message.slice(0, 120)}` };
+  }
 }
 
 function globToRegExp(glob: string): RegExp {

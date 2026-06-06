@@ -40,6 +40,14 @@ const AssertionSpec = z
     file_absent: z.string().optional(),
     /** No produced file may contain a hardcoded secret (keys, tokens, private keys). */
     no_secrets: z.boolean().optional(),
+    /**
+     * The config under test must not reference a known-compromised component
+     * (MCP server, agent skill, npm dep). Value is a path to an exposure
+     * catalog -- a JSON file or a directory of them (Bumblebee-compatible).
+     */
+    no_known_exposure: z.string().optional(),
+    /** Only fail no_known_exposure on a finding at/above this severity (default: any finding). */
+    min_severity: z.enum(["critical", "high", "medium", "low", "info"]).optional(),
   })
   .refine(
     (o) =>
@@ -58,11 +66,15 @@ const AssertionSpec = z
         o.judge,
         o.file_absent,
         o.no_secrets,
+        o.no_known_exposure,
       ].some((v) => v !== undefined),
     { message: "each assertion must specify a check" },
   )
   .refine((o) => o.min_score === undefined || o.judge !== undefined, {
     message: "min_score is only valid together with judge",
+  })
+  .refine((o) => o.min_severity === undefined || o.no_known_exposure !== undefined, {
+    message: "min_severity is only valid together with no_known_exposure",
   });
 
 const GateSpec = z.object({

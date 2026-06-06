@@ -1,0 +1,21 @@
+{
+  "schema_version": "0.1.0",
+  "_comment": "Exposure catalog (Bumblebee-compatible). One entry per advisory. `crucible scan` and the `no_known_exposure` assertion flag exact (ecosystem, package, version) matches against a config's MCP servers, agent skills, and npm deps. Omit `versions` to match any version of a package. Point --exposure-catalog at this file or at a directory of such files.",
+  "entries": [
+    {
+      "id": "EXAMPLE-2026-0001",
+      "name": "example compromised MCP server (sample advisory, not real)",
+      "ecosystem": "npm",
+      "package": "@example/totally-not-real-mcp",
+      "versions": ["1.0.0", "1.0.1"],
+      "severity": "critical"
+    },
+    {
+      "id": "EXAMPLE-2026-0002",
+      "name": "example poisoned agent skill (sample advisory, not real)",
+      "ecosystem": "agent-skill",
+      "package": "definitely-not-a-real-skill",
+      "severity": "high"
+    }
+  ]
+}

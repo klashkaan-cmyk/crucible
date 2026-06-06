@@ -1,0 +1,24 @@
+# Example: a supply-chain provenance gate.
+#
+# `no_known_exposure` statically scans the config under test -- its MCP servers
+# (.mcp.json / settings mcpServers), agent skills (SKILL.md), and npm deps
+# (package-lock.json) -- against an exposure catalog, and fails if any component
+# matches a known-bad advisory. It is independent of the model run, so it is
+# cheap and stable; in practice you add it to ANY scenario so every CI run also
+# checks provenance. The catalog path is resolved from the directory you run
+# `crucible` in.
+name: config-has-no-known-exposures
+
+prompt: |
+  Briefly confirm you are ready. (This gate is static; the prompt is a
+  placeholder so it can ride alongside a real behavioral scenario.)
+
+trials: 1
+max_turns: 3
+
+assert:
+  - no_known_exposure: "examples/exposure-catalog.example.json"
+    # min_severity: high   # uncomment to fail only on high/critical advisories
+
+gate:
+  min_pass_rate: 1

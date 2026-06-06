@@ -90,6 +90,7 @@ async function runOneTrial(
     const assertions = await evaluateAssertions(scenario.assert, run, {
       claudeBin: opts.claudeBin,
       judgeModel: opts.judgeModel,
+      configDir: opts.configDir,
     });
     const authHint = authFailureHint(run.headless);
     if (authHint) {
