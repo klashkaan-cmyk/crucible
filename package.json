@@ -1,7 +1,7 @@
 {
   "name": "crucible-ci",
   "version": "0.7.0",
-  "description": "Regression CI for Claude Code configs. Treat your .claude/ (skills, subagents, hooks, CLAUDE.md) as code under test.",
+  "description": "Regression CI for Claude Code configs. Treat your .claude/ (skills, subagents, hooks, CLAUDE.md) as code under test -- deterministic + LLM-judge assertions, baselines, transcript diffs, and supply-chain exposure scanning of MCP servers, skills & deps.",
   "type": "module",
   "bin": {
     "crucible": "dist/cli.js"
