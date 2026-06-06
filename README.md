@@ -139,6 +139,7 @@ works end-to-end out of the box: `git clone`, then `crucible run`.
 | `judge: rubric` (+ `min_score`) | an LLM scores the output 1-5 vs the rubric |
 | `file_absent: path` | the file must NOT exist after the run |
 | `no_secrets: true` | no produced file contains a hardcoded key/token/private key |
+| `no_known_exposure: catalog` (+ `min_severity`) | the config has no component flagged by the exposure catalog |
 
 ### LLM-judge assertions (soft by default)
 
@@ -330,6 +331,39 @@ subagents with no `name`/`description` or **duplicate names**, skills with no
 `CLAUDE.md`/configs, and an oversized `CLAUDE.md`. Exits non-zero on any error,
 so it gates CI on its own -- run it before the (paid) behavioral suite.
 
+## Supply-chain scanning: `crucible scan` & `no_known_exposure`
+
+Your `.claude/` config is also a supply chain: MCP servers, agent skills, and npm
+deps you pull in. When an advisory names a compromised one, you want to know which
+configs reference it. `crucible scan` inventories a config's components (MCP
+servers from `.mcp.json`/settings, skills from `SKILL.md`, deps from
+`package-lock.json`) and matches them against an **exposure catalog** -- read-only,
+no package managers run, no model calls, deterministic.
+
+```bash
+crucible scan --config .claude --exposure-catalog threat_intel/    # text summary
+crucible scan -c .claude -e threat_intel/ --format ndjson          # one JSON record per line
+crucible scan -c .claude -e threat_intel/ --fail-on high           # exit 1 on a high+ finding
+```
+
+Make it a hard gate inside any scenario with the `no_known_exposure` assertion --
+it's static (independent of the model run) and free, so every CI run also checks
+provenance:
+
+```yaml
+assert:
+  - no_known_exposure: "threat_intel/"
+    # min_severity: high   # fail only on high/critical (default: any finding)
+```
+
+Catalogs are simple JSON (`schema_version` + `entries[]`) and live in
+[`threat_intel/`](./threat_intel); `lint` and `scan` auto-discover that directory
+next to your config. The format is compatible with
+[Bumblebee](https://github.com/perplexityai/bumblebee) (Apache-2.0), so you can
+point `--exposure-catalog` straight at a Bumblebee-published catalog. See
+[`threat_intel/README.md`](./threat_intel/README.md) for the schema and where to
+source real advisory data.
+
 ## Security: the red-team pack
 
 A built-in suite that tests whether your config **resists** abuse -- prompt
@@ -386,3 +420,7 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md). Issues and scenario contributions welc
 ## License
 
 MIT (c) 2026 Khalid Vance. See [LICENSE](./LICENSE).
+
+The supply-chain scanner's exposure-catalog and NDJSON record format are a
+clean-room reimplementation of [Bumblebee](https://github.com/perplexityai/bumblebee)
+(Perplexity AI, Apache-2.0); no Bumblebee code is included. See [NOTICE](./NOTICE).

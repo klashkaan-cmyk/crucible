@@ -178,6 +178,7 @@ program
   .command("lint")
   .description("Static checks on a .claude config (no model calls, no cost)")
   .option("-c, --config <dir>", "config dir to lint", ".claude")
+  .option("-e, --exposure-catalog <path>", "also flag known-compromised components from this advisory catalog (file or dir; auto-discovers ./threat_intel)")
   .option("--json", "output findings as JSON", false)
   .action(lintCommand);
 
@@ -933,9 +934,12 @@ async function bisectCommand(opts: {
   process.exit(0);
 }
 
-async function lintCommand(opts: { config: string; json?: boolean }): Promise<void> {
+async function lintCommand(opts: { config: string; json?: boolean; exposureCatalog?: string }): Promise<void> {
   const dir = path.resolve(opts.config);
-  const findings = await lintConfig(dir);
+  const findings = await lintConfig(
+    dir,
+    opts.exposureCatalog ? { exposureCatalog: path.resolve(opts.exposureCatalog) } : {},
+  );
   const counts = countByLevel(findings);
 
   if (opts.json) {

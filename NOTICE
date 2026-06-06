@@ -1,0 +1,20 @@
+Crucible
+Copyright 2026 Khalid Vance
+
+Crucible is licensed under the MIT License (see LICENSE).
+
+----------------------------------------------------------------------
+
+This product includes a clean-room reimplementation of the exposure-catalog
+format, the NDJSON package/finding record schema, and the exact-match scanning
+approach from Bumblebee, a supply-chain inventory scanner by Perplexity AI:
+
+    https://github.com/perplexityai/bumblebee
+    Licensed under the Apache License, Version 2.0.
+
+No Bumblebee source code is included or copied. Only the catalog/record schema
+and the matching approach were independently reimplemented in TypeScript so that
+Crucible's `scan` command and `no_known_exposure` assertion interoperate with
+Bumblebee-published exposure catalogs. The Apache License 2.0 is available at:
+
+    https://www.apache.org/licenses/LICENSE-2.0

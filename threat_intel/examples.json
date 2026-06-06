@@ -1,0 +1,37 @@
+{
+  "schema_version": "0.1.0",
+  "_comment": "STARTER / ILLUSTRATIVE catalog. Every entry below uses an obviously-fake package name and will NOT match a real config -- it exists to show the format, not to provide live threat intel. Replace it with advisories from an authoritative source (see README.md). Matching is exact on (ecosystem, package, version); omit `versions` to flag every version of a package.",
+  "entries": [
+    {
+      "id": "EXAMPLE-MCP-0001",
+      "name": "example backdoored MCP server (illustrative, not real)",
+      "ecosystem": "npm",
+      "package": "@example/totally-not-real-mcp-server",
+      "versions": ["1.0.0", "1.0.1"],
+      "severity": "critical"
+    },
+    {
+      "id": "EXAMPLE-MCP-0002",
+      "name": "example MCP server, all versions flagged (illustrative, not real)",
+      "ecosystem": "mcp",
+      "package": "example-unvetted-server-key",
+      "severity": "high"
+    },
+    {
+      "id": "EXAMPLE-SKILL-0001",
+      "name": "example poisoned agent skill (illustrative, not real)",
+      "ecosystem": "agent-skill",
+      "package": "example-definitely-not-a-real-skill",
+      "versions": ["6.6.6"],
+      "severity": "high"
+    },
+    {
+      "id": "EXAMPLE-NPM-0001",
+      "name": "example compromised npm dependency (illustrative, not real)",
+      "ecosystem": "npm",
+      "package": "example-not-a-real-left-pad",
+      "versions": ["9.9.9"],
+      "severity": "medium"
+    }
+  ]
+}

@@ -10,6 +10,7 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import { findSecret } from "./secrets.js";
+import { scanConfig } from "./supplychain.js";
 
 export type LintLevel = "error" | "warn" | "info";
 
@@ -20,15 +21,25 @@ export interface LintFinding {
   readonly file: string;
 }
 
+export interface LintOptions {
+  /**
+   * Path to an exposure catalog (a JSON file or a directory of them). When set,
+   * lint also flags known-compromised components. When omitted, a `threat_intel/`
+   * directory next to the config is auto-discovered if present.
+   */
+  readonly exposureCatalog?: string;
+}
+
 const CLAUDE_MD_WARN_BYTES = 20_000;
 
-export async function lintConfig(dir: string): Promise<LintFinding[]> {
+export async function lintConfig(dir: string, opts: LintOptions = {}): Promise<LintFinding[]> {
   const findings: LintFinding[] = [];
   await lintSettings(dir, findings);
   await lintAgents(dir, findings);
   await lintSkills(dir, findings);
   await lintClaudeMd(dir, findings);
   await lintSecrets(dir, findings);
+  await lintSupplyChain(dir, opts.exposureCatalog, findings);
   return findings;
 }
 
@@ -187,6 +198,59 @@ async function lintSecrets(dir: string, out: LintFinding[]): Promise<void> {
     const hit = findSecret(raw);
     if (hit) out.push({ rule: "secret", level: "error", file, message: `possible hardcoded ${hit.name} -- move it to an env var / secret manager` });
   }
+}
+
+/**
+ * Supply-chain provenance check: flag config components (MCP servers, agent
+ * skills, npm deps) that appear in a known-exposure catalog. Reuses the same
+ * scanner as `crucible scan` / the `no_known_exposure` assertion.
+ */
+async function lintSupplyChain(
+  dir: string,
+  explicitCatalog: string | undefined,
+  out: LintFinding[],
+): Promise<void> {
+  const catalog = explicitCatalog ?? (await discoverCatalog(dir));
+  if (!catalog) return;
+  try {
+    const { components, findings } = await scanConfig(dir, catalog);
+    const sourceByKey = new Map<string, string>();
+    for (const c of components) sourceByKey.set(`${c.ecosystem}|${c.name}|${c.version ?? ""}`, c.sourceFile);
+    for (const f of findings) {
+      const file = sourceByKey.get(`${f.ecosystem}|${f.packageName}|${f.version ?? ""}`) ?? catalog;
+      out.push({
+        rule: "supply-chain-exposure",
+        level: severityToLevel(f.severity),
+        file,
+        message: `known-compromised ${f.ecosystem} '${f.packageName}${f.version ? "@" + f.version : ""}' (${f.severity}, ${f.catalogId}): ${f.evidence}`,
+      });
+    }
+  } catch (err) {
+    out.push({
+      rule: "supply-chain-catalog",
+      level: "warn",
+      file: catalog,
+      message: `exposure catalog could not be loaded: ${(err as Error).message.slice(0, 120)}`,
+    });
+  }
+}
+
+function severityToLevel(sev: string): LintLevel {
+  if (sev === "critical" || sev === "high") return "error";
+  if (sev === "medium") return "warn";
+  return "info";
+}
+
+/** Auto-discover a `threat_intel/` catalog directory next to the config. */
+async function discoverCatalog(dir: string): Promise<string | undefined> {
+  for (const c of [path.join(dir, "..", "threat_intel"), path.join(dir, "threat_intel")]) {
+    try {
+      if ((await stat(c)).isDirectory()) return c;
+    } catch {
+      // not here -> keep looking
+    }
+  }
+  return undefined;
 }
 
 export function countByLevel(findings: ReadonlyArray<LintFinding>): Record<LintLevel, number> {
